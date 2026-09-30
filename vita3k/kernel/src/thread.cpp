@@ -140,7 +140,7 @@ int ThreadState::init(const char *name, Ptr<const void> entry_point, int init_pr
 
     std::string alloc_name = fmt::format("Stack for thread {} (#{})", name, id);
     stack = alloc_block(mem, stack_size, alloc_name.c_str());
-    memset(stack.get_ptr<void>().get(mem), 0xcc, stack_size);
+    memset(stack.get_ptr<void>().get(mem), 0xff, stack_size);
 
     const std::string thread_line = fmt::format("[THREAD] created \"{}\" (#{}) entry=0x{:X} prio={} affinity=0x{:X} stack=0x{:X}..0x{:X}", name, id, entry_point.address(), priority, affinity_mask, stack.get(), stack.get() + stack_size);
     bool first_of_shape;
