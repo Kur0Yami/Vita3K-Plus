@@ -152,6 +152,7 @@ class EmulationSessionViewModel(application: Application) : AndroidViewModel(app
         )
         applyOverlayState(emulator)
         emulator.restoreImeAfterPauseMenu()
+        emulator.focusGameSurface()
     }
 
     fun togglePause(emulator: Emulator) {

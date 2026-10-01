@@ -1247,7 +1247,7 @@ void VKState::cleanup() {
         descriptor.descriptors_idx = 0;
     };
 
-    device.waitIdle();
+    wait_gpu_idle();
 
     request_queue.abort();
 
@@ -2085,7 +2085,7 @@ void VKState::unmap_memory(MemState &mem, Ptr<void> address) {
     }
 
     // we need to wait in case the buffer is being used
-    device.waitIdle();
+    wait_gpu_idle();
 
     // Drain the GPU wait thread's queue too
     {

@@ -75,6 +75,7 @@ bool VoiceScheduler::play(const MemState &mem, Voice *voice) {
 
     // Transition
     voice->transition(mem, VOICE_STATE_ACTIVE);
+    voice->play_count++;
 
     for (size_t i = 0; i < voice->rack->modules.size(); i++)
         if (voice->rack->modules[i])
@@ -288,7 +289,24 @@ void VoiceScheduler::update(KernelState &kern, const MemState &mem, const SceUID
         case PendingType::ReleaseRack: {
             const SceNgsCallbackInfo info = op.release_data.rack->release_callback_info(mem);
             release_rack(*op.release_data.state, mem, op.system, op.release_data.rack);
+            scheduler_lock.unlock();
             ngs::invoke_callback(kern, mem, thread_id, Ptr<void>(op.release_data.callback), info);
+            scheduler_lock.lock();
+            break;
+        }
+        case PendingType::VoiceFinished: {
+            Voice *voice = op.finished_data.voice;
+            const bool deliver = voice->state == VOICE_STATE_AVAILABLE && voice->play_count == op.finished_data.play_count && voice->finished_callback;
+            static std::atomic<uint64_t> delivered{ 0 }, dropped{ 0 };
+            const uint64_t n = (deliver ? delivered : dropped).fetch_add(1, std::memory_order_relaxed) + 1;
+            if (n <= 4 || (n % 1024) == 0)
+                LOG_INFO("[NGSLIFE] key-off finished callbacks from sceNgsSystemUpdate: {} delivered, {} dropped (voice keyed on again or no callback)",
+                    delivered.load(std::memory_order_relaxed), dropped.load(std::memory_order_relaxed));
+            if (!deliver)
+                break;
+            scheduler_lock.unlock();
+            voice->invoke_callback(kern, mem, thread_id, voice->finished_callback, voice->finished_callback_user_data, 0);
+            scheduler_lock.lock();
             break;
         }
         }

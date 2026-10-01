@@ -168,7 +168,6 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
     code(bool, "texture-cache", true, texture_cache)                                                    \
     code(bool, "async-pipeline-compilation", false, async_pipeline_compilation)                          \
     code(bool, "accurate-thread-scheduling", true, accurate_thread_scheduling)                          \
-    code(bool, "preempt-on-wake", false, preempt_on_wake)                                               \
     code(int, "preempt-on-wake-us", 1000, preempt_on_wake_us)                                             \
     code(int, "guest-cores", 3, guest_cores)  /* the Vita gives an application three of its four cores */ \
     code(bool, "show-compile-shaders", true, show_compile_shaders)                                      \

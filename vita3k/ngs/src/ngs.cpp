@@ -514,6 +514,18 @@ void release_rack(State &ngs, const MemState &mem, System *system, Rack *rack) {
         }
     }
 
+    // finished callbacks queued for voices about to be destroyed
+    {
+        std::queue<OperationPending> kept;
+        auto &pending = system->voice_scheduler.operations_pending;
+        for (; !pending.empty(); pending.pop()) {
+            const OperationPending &op = pending.front();
+            if (op.type != PendingType::VoiceFinished || op.finished_data.voice->rack != rack)
+                kept.push(op);
+        }
+        pending.swap(kept);
+    }
+
     // remove all queued voices
     for (const auto &voice : rack->voices) {
         Voice *v = voice.get(mem);

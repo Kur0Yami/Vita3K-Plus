@@ -212,6 +212,7 @@ struct KernelState {
     int nudge_all_condvar_waiters();
 
     std::atomic<uint64_t> thread_wake_counter{ 0 };
+    std::atomic<uint64_t> thread_create_counter{ 0 };
 
     // Kill all guest threads and block until they have exited. Must only be called from a host thread.
     void process_exit();

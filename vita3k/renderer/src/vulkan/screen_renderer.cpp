@@ -377,7 +377,7 @@ void ScreenRenderer::destroy_swapchain() {
 }
 
 void ScreenRenderer::cleanup() {
-    state.device.waitIdle();
+    state.wait_gpu_idle();
 
     filter.reset();
 

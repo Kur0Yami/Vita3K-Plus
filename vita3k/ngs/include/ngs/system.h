@@ -289,6 +289,7 @@ struct Voice {
     bool is_paused;
     bool is_keyed_off;
     uint32_t frame_count;
+    uint32_t play_count = 0;
 
     using Patches = std::vector<Ptr<Patch>>;
 

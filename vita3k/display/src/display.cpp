@@ -208,6 +208,8 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
             static uint64_t last_seen_vblanks = 0;
             static uint64_t last_idle_render_dump_vblank = 0;
             static int idle_render_dumps = 0;
+            static uint64_t last_create_value = 0;
+            static uint64_t last_create_change_vblank = 0;
             const auto renderer_heartbeat = [&]() {
                 if (!emuenv.renderer)
                     return;
@@ -245,6 +247,8 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
                 stuck_scene_alive_noted = false;
                 last_idle_render_dump_vblank = 0;
                 idle_render_dumps = 0;
+                last_create_value = 0;
+                last_create_change_vblank = 0;
             }
             last_seen_vblanks = vblanks;
             const bool unpaused = !emuenv.kernel.is_threads_paused();
@@ -262,6 +266,14 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
             }
             const uint64_t renderer_idle_vblanks = vblanks - last_progress_change_vblank;
             const uint64_t guest_idle_vblanks = vblanks - last_wake_change_vblank;
+            constexpr uint64_t THREAD_CREATE_QUIET_VBLANKS = 300; // ~5s
+            const uint64_t creates_now = emuenv.kernel.thread_create_counter.load(std::memory_order_relaxed);
+            if (creates_now != last_create_value) {
+                last_create_value = creates_now;
+                last_create_change_vblank = vblanks;
+            }
+            const uint64_t create_idle_vblanks = vblanks - last_create_change_vblank;
+            const bool guest_creating_threads = create_idle_vblanks < THREAD_CREATE_QUIET_VBLANKS;
 
             // Flip tracing - only us while chasing a freeze
             constexpr bool log_flip_trace = false;
@@ -381,7 +393,7 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
                 last_provable_dryrun_setframe = setframe;
                 emuenv.kernel.try_break_provable_evf_cycle(true);
             }
-            if (!never_flipped && stall_vblanks > PROVABLE_BREAK_VBLANKS && unpaused && renderer_idle_vblanks > PROVABLE_BREAK_VBLANKS && world_stop_quiet && mem_transition_quiet && last_provable_break_setframe != setframe) {
+            if (!never_flipped && stall_vblanks > PROVABLE_BREAK_VBLANKS && unpaused && renderer_idle_vblanks > PROVABLE_BREAK_VBLANKS && world_stop_quiet && mem_transition_quiet && !guest_creating_threads && last_provable_break_setframe != setframe) {
 #ifdef _WIN32
                 // if (!IsDebuggerPresent())  // Debug speed can make a normal load look exactly like a wedge hang
 #endif
@@ -412,6 +424,8 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
                 const bool partial_wedge = stall_vblanks > BREAK_SLOW_VBLANKS && renderer_idle_vblanks > BREAK_SLOW_VBLANKS;
                 if (!full_wedge && !partial_wedge) {
                     LOG_INFO("HANG WATCHDOG: no flip for {} vblanks but still alive (renderer executed a command {} vblanks ago, a guest thread woke {} vblanks ago) — breaker suppressed", stall_vblanks, renderer_idle_vblanks, guest_idle_vblanks);
+                } else if (guest_creating_threads) {
+                    LOG_INFO("HANG WATCHDOG: no flip for {} vblanks, renderer idle {}, but the guest created a thread {} vblanks ago — loading, breakers held", stall_vblanks, renderer_idle_vblanks, create_idle_vblanks);
                 } else {
                     constexpr int MAX_BREAK_DUMPS_PER_STALL = 3;
                     if (break_dumps_this_stall < MAX_BREAK_DUMPS_PER_STALL) {
