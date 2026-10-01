@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <kernel/types.h>
 #include <set>
 #include <thread>
@@ -33,22 +34,39 @@
 
 static constexpr bool LOG_SYNC_PRIMITIVES = false;
 
-static void preempt_yield_to_woken(int window_us) {
-    if (window_us <= 0)
-        return;
-    const auto start = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - start < std::chrono::microseconds(window_us))
-        std::this_thread::yield();
+struct PreemptTarget {
+    ThreadStatePtr thread;
+    int priority;
+    MutexPtr mutex;
+    SceUID evf_uid;
+    uint32_t wait_seq;
+};
+
+static bool preempt_turn_over(const PreemptTarget &t) {
+    {
+        const std::lock_guard<std::mutex> lock(t.thread->mutex);
+        if (t.thread->status == ThreadStatus::dormant || t.thread->is_delete_requested())
+            return true;
+        if (t.thread->status != ThreadStatus::wait)
+            return false;
+        if (!t.mutex)
+            return t.thread->wait_seq != t.wait_seq && t.thread->wait_prim_uid == t.evf_uid && t.thread->wait_prim_kind && std::strcmp(t.thread->wait_prim_kind, "evf") == 0;
+    }
+    const std::lock_guard<std::mutex> lock(t.mutex->mutex);
+    return t.mutex->owner_id != t.thread->id;
 }
 
-static void preempt_after_wake(KernelState &kernel, SceUID caller_tid, int best_woken_prio) {
-    if (best_woken_prio == 0x7fffffff)
-        return;
+static void preempt_after_wake(KernelState &kernel, SceUID caller_tid, std::vector<PreemptTarget> &woken) {
     const ThreadStatePtr caller = kernel.get_thread(caller_tid);
-    if (!caller)
+    if (!caller || kernel.preempt_on_wake_us <= 0)
         return;
-    if (best_woken_prio < caller->priority)
-        preempt_yield_to_woken(kernel.preempt_on_wake_us);
+    woken.erase(std::remove_if(woken.begin(), woken.end(), [&](const PreemptTarget &t) { return t.priority >= caller->priority; }), woken.end());
+    const auto start = std::chrono::steady_clock::now();
+    while (!woken.empty() && std::chrono::steady_clock::now() - start < std::chrono::microseconds(kernel.preempt_on_wake_us)) {
+        if (std::all_of(woken.begin(), woken.end(), preempt_turn_over))
+            return;
+        std::this_thread::yield();
+    }
 }
 
 // ***********
@@ -899,7 +917,7 @@ int mutex_try_lock(KernelState &kernel, MemState &mem, const char *export_name, 
 }
 
 inline static int mutex_unlock_impl(KernelState &kernel, MemState &mem, const char *export_name, SceUID thread_id, int unlock_count, MutexPtr &mutex) {
-    int woken_prio = 0x7fffffff; // priority of the thread we hand the mutex to, if any (preempt-on-wake)
+    std::vector<PreemptTarget> woken;
     {
         const std::lock_guard<std::mutex> mutex_lock(mutex->mutex);
 
@@ -921,7 +939,8 @@ inline static int mutex_unlock_impl(KernelState &kernel, MemState &mem, const ch
 
                     const std::lock_guard<std::mutex> waiting_thread_lock(waiting_thread->mutex);
                     waiting_thread->update_status(ThreadStatus::run, ThreadStatus::wait);
-                    woken_prio = waiting_thread->priority;
+                    if (kernel.preempt_on_wake)
+                        woken.push_back({ waiting_thread, waiting_thread->priority, mutex, 0, 0 });
 
                     mutex->waiting_threads->pop();
                     mutex->lock_count += waiting_lock_count;
@@ -947,8 +966,8 @@ inline static int mutex_unlock_impl(KernelState &kernel, MemState &mem, const ch
         }
     }
 
-    if (kernel.preempt_on_wake && woken_prio != 0x7fffffff)
-        preempt_after_wake(kernel, thread_id, woken_prio);
+    if (!woken.empty())
+        preempt_after_wake(kernel, thread_id, woken);
 
     return SCE_KERNEL_OK;
 }
@@ -2013,7 +2032,7 @@ SceInt32 eventflag_set(KernelState &kernel, const char *export_name, SceUID thre
     }
 
     uint32_t woken_count = 0;
-    int best_woken_prio = 0x7fffffff; // lowest numeric priority woken = highest priority (preempt-on-wake)
+    std::vector<PreemptTarget> woken;
     {
         const std::lock_guard<std::mutex> event_lock(event->mutex);
         event->flags |= bitPattern;
@@ -2046,8 +2065,8 @@ SceInt32 eventflag_set(KernelState &kernel, const char *export_name, SceUID thre
                 const std::lock_guard<std::mutex> waiting_thread_lock(waiting_thread->mutex);
 
                 waiting_thread->update_status(ThreadStatus::run, ThreadStatus::wait);
-                if (waiting_thread->priority < best_woken_prio)
-                    best_woken_prio = waiting_thread->priority;
+                if (kernel.preempt_on_wake)
+                    woken.push_back({ waiting_thread, waiting_thread->priority, nullptr, event->uid, waiting_thread->wait_seq });
                 woken_count++;
 
                 event->waiting_threads->erase(it++);
@@ -2058,8 +2077,8 @@ SceInt32 eventflag_set(KernelState &kernel, const char *export_name, SceUID thre
         evf_record(evfId, thread_id, 0, bitPattern, event->flags, woken_count);
     }
 
-    if (kernel.preempt_on_wake && woken_count > 0)
-        preempt_after_wake(kernel, thread_id, best_woken_prio);
+    if (!woken.empty())
+        preempt_after_wake(kernel, thread_id, woken);
 
     return 0;
 }
