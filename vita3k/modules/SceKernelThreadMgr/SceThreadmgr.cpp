@@ -883,41 +883,75 @@ EXPORT(int, _sceKernelWaitSignalCB, uint32_t unknown, uint32_t delay, uint32_t t
     return CALL_EXPORT(_sceKernelWaitSignal, unknown, delay, timeout);
 }
 
-static int wait_thread_end(ThreadStatePtr &waiter, ThreadStatePtr &target, int *stat, SceUInt *timeout, const char *export_name) {
-    {
-        const std::lock_guard<std::mutex> target_lock(target->mutex);
-        if (target->status == ThreadStatus::dormant) {
-            if (stat != nullptr) {
-                *stat = target->returned_value;
-            }
-            return 0;
+static bool has_pending_callbacks(const ThreadState &thread) {
+    return std::any_of(thread.callbacks.begin(), thread.callbacks.end(), [](const CallbackPtr &cb) { return cb->is_executable(); });
+}
+
+static int wait_thread_end(KernelState &kernel, ThreadStatePtr &waiter, ThreadStatePtr &target, int *stat, SceUInt *timeout, bool callbacks, const char *export_name) {
+    constexpr auto CALLBACK_POLL = std::chrono::milliseconds(1);
+    const bool poll_callbacks = callbacks && !waiter->is_processing_callbacks;
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + std::chrono::microseconds(timeout ? *timeout : 0);
+    const auto is_woken = [&]() { return waiter->status == ThreadStatus::run; };
+    while (true) {
+        if (callbacks)
+            process_callbacks(kernel, waiter->id);
+        {
+            const std::lock_guard<std::mutex> target_lock(target->mutex);
+            if (target->status == ThreadStatus::dormant)
+                break;
+
+            const std::lock_guard<std::mutex> waiter_lock(waiter->mutex);
+            waiter->update_status(ThreadStatus::wait);
+            target->waiting_threads.push_back(waiter);
         }
 
-        const std::lock_guard<std::mutex> waiter_lock(waiter->mutex);
-        waiter->update_status(ThreadStatus::wait);
-        target->waiting_threads.push_back(waiter);
-    }
+        std::unique_lock<std::mutex> waiter_lock(waiter->mutex);
+        bool woken = false;
+        bool timed_out = false;
+        if (!poll_callbacks) {
+            if (!timeout) {
+                waiter->status_cond.wait(waiter_lock, is_woken);
+                woken = true;
+            } else {
+                woken = waiter->wait_for_run_precise(waiter_lock, *timeout);
+                timed_out = !woken;
+            }
+        } else {
+            while (!(woken = is_woken()) && !has_pending_callbacks(*waiter)) {
+                if (timeout) {
+                    const auto left = deadline - std::chrono::steady_clock::now();
+                    if (left <= std::chrono::steady_clock::duration::zero()) {
+                        timed_out = true;
+                        break;
+                    }
+                    if (left < CALLBACK_POLL) {
+                        woken = waiter->wait_for_run_precise(waiter_lock, std::chrono::duration_cast<std::chrono::microseconds>(left).count());
+                        timed_out = !woken;
+                        break;
+                    }
+                }
+                waiter->status_cond.wait_for(waiter_lock, CALLBACK_POLL, is_woken);
+            }
+        }
+        if (woken)
+            break;
 
-    const auto start = std::chrono::steady_clock::now();
-    std::unique_lock<std::mutex> waiter_lock(waiter->mutex);
-    if (!timeout) {
-        waiter->status_cond.wait(waiter_lock, [&]() {
-            return waiter->status == ThreadStatus::run;
-        });
-    } else if (!waiter->wait_for_run_precise(waiter_lock, *timeout)) {
         waiter_lock.unlock();
-        const std::lock_guard<std::mutex> target_lock(target->mutex);
-        const auto queued = std::find(target->waiting_threads.begin(), target->waiting_threads.end(), waiter);
-        if (queued != target->waiting_threads.end()) {
+        {
+            const std::lock_guard<std::mutex> target_lock(target->mutex);
+            const auto queued = std::find(target->waiting_threads.begin(), target->waiting_threads.end(), waiter);
+            if (queued == target->waiting_threads.end())
+                break;
             target->waiting_threads.erase(queued);
             const std::lock_guard<std::mutex> relock(waiter->mutex);
             waiter->update_status(ThreadStatus::run);
+        }
+        if (timed_out) {
             *timeout = 0;
             return RET_ERROR(SCE_KERNEL_ERROR_WAIT_TIMEOUT);
         }
     }
-    if (waiter_lock.owns_lock())
-        waiter_lock.unlock();
 
     if (timeout) {
         const auto used = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
@@ -937,7 +971,7 @@ EXPORT(int, _sceKernelWaitThreadEnd, SceUID thid, int *stat, SceUInt *timeout) {
     if (!target) {
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID);
     }
-    return wait_thread_end(waiter, target, stat, timeout, export_name);
+    return wait_thread_end(emuenv.kernel, waiter, target, stat, timeout, false, export_name);
 }
 
 EXPORT(int, _sceKernelWaitThreadEndCB, SceUID thid, int *stat, SceUInt *timeout) {
@@ -947,8 +981,7 @@ EXPORT(int, _sceKernelWaitThreadEndCB, SceUID thid, int *stat, SceUInt *timeout)
     if (!target) {
         return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID);
     }
-    process_callbacks(emuenv.kernel, thread_id);
-    return wait_thread_end(waiter, target, stat, timeout, export_name);
+    return wait_thread_end(emuenv.kernel, waiter, target, stat, timeout, true, export_name);
 }
 
 EXPORT(SceInt32, sceKernelCancelCallback, SceUID callbackId) {
