@@ -168,6 +168,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
   public void setState(int overlay_mask){
     if(mOverlayMask != overlay_mask){
       mOverlayMask = overlay_mask;
+      releaseInactiveInputs();
       invalidate();
     }
 
@@ -203,6 +204,99 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
     }
 
     invalidate();
+  }
+
+  private void releaseButton(InputOverlayDrawableButton button)
+  {
+    int legacyId = button.getLegacyId();
+    button.setPressedState(false);
+    if (legacyId != ButtonType.BUTTON_TOUCH_SWITCH && legacyId != ButtonType.BUTTON_TOUCH_HIDE)
+      setButton(button.getControl(), false);
+    button.setTrackId(-1);
+  }
+
+  private void releaseDpad(InputOverlayDrawableDpad dpad)
+  {
+    for (int i = 0; i < 4; i++)
+      setButton(dpad.getControl(i), false);
+    dpad.setState(InputOverlayDrawableDpad.STATE_DEFAULT);
+    dpad.setTrackId(-1);
+  }
+
+  private void releaseJoystick(InputOverlayDrawableJoystick joystick)
+  {
+    setAxis(joystick.getXControl(), (short)0);
+    setAxis(joystick.getYControl(), (short)0);
+    joystick.release();
+  }
+
+  private void releaseTrackedInputs(int pointerId)
+  {
+    boolean released = false;
+    for (InputOverlayDrawableButton button : overlayButtons)
+    {
+      if (button.getTrackId() != -1 && (pointerId == -1 || button.getTrackId() == pointerId))
+      {
+        releaseButton(button);
+        released = true;
+      }
+    }
+    for (InputOverlayDrawableDpad dpad : overlayDpads)
+    {
+      if (dpad.getTrackId() != -1 && (pointerId == -1 || dpad.getTrackId() == pointerId))
+      {
+        releaseDpad(dpad);
+        released = true;
+      }
+    }
+    for (InputOverlayDrawableJoystick joystick : overlayJoysticks)
+    {
+      if (joystick.getTrackId() != -1 && (pointerId == -1 || joystick.getTrackId() == pointerId))
+      {
+        releaseJoystick(joystick);
+        released = true;
+      }
+    }
+    if (released)
+      invalidate();
+  }
+
+  private void releaseInactiveInputs()
+  {
+    final boolean processing = mOverlayMask != 0 && (mAllowVirtualController || isInEditMode());
+    boolean released = false;
+    for (InputOverlayDrawableButton button : overlayButtons)
+    {
+      final int role = button.getRole();
+      final boolean active = processing && (role & mOverlayMask) != 0
+              && (!mHideOverlayButtons || (role & OVERLAY_MASK_UTILITY) != 0);
+      if (!active && button.getTrackId() != -1)
+      {
+        releaseButton(button);
+        released = true;
+      }
+    }
+    if (!processing || mHideOverlayButtons)
+    {
+      for (InputOverlayDrawableDpad dpad : overlayDpads)
+      {
+        if (dpad.getTrackId() != -1)
+        {
+          releaseDpad(dpad);
+          released = true;
+        }
+      }
+      for (InputOverlayDrawableJoystick joystick : overlayJoysticks)
+      {
+        if (joystick.getTrackId() != -1)
+        {
+          releaseJoystick(joystick);
+          released = true;
+        }
+      }
+    }
+    if (released)
+      invalidate();
   }
 
   public void draw(Canvas canvas)
@@ -243,6 +337,17 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
   @Override
   public boolean onTouch(View v, MotionEvent event)
   {
+    final int actionMasked = event.getActionMasked();
+    if (actionMasked == MotionEvent.ACTION_CANCEL)
+    {
+      releaseAllInputs();
+      return false;
+    }
+    if (actionMasked == MotionEvent.ACTION_DOWN)
+      releaseTrackedInputs(-1);
+    else if (actionMasked == MotionEvent.ACTION_POINTER_DOWN)
+      releaseTrackedInputs(event.getPointerId(event.getActionIndex()));
+
     if (mOverlayMask == 0)
       return false;
 
@@ -260,6 +365,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
     int pointerIndex = firstPointer ? 0 : event.getActionIndex();
     // track if the overlay is concerned this this action
     boolean concerned = false;
+    boolean hideToggled = false;
 
 
 
@@ -290,7 +396,10 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
             if (legacyId == ButtonType.BUTTON_TOUCH_SWITCH)
               setTouchState(button.getTouchSwitchState());
             else if (legacyId == ButtonType.BUTTON_TOUCH_HIDE)
+            {
               mHideOverlayButtons = !mHideOverlayButtons;
+              hideToggled = true;
+            }
             else
               setButton(button.getControl(), true);
           }
@@ -386,6 +495,9 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
         }
       }
     }
+
+    if (hideToggled)
+      releaseInactiveInputs();
 
     if (concerned)
       invalidate();
@@ -917,6 +1029,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
       return;
 
     mAllowVirtualController = allowVirtualController;
+    releaseInactiveInputs();
     updateVirtualControllerState();
   }
 

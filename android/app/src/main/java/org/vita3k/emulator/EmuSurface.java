@@ -8,9 +8,12 @@ import android.view.View;
 import org.libsdl.app.SDLSurface;
 import org.vita3k.emulator.overlay.InputOverlay;
 
+import java.util.HashSet;
+
 public class EmuSurface extends SDLSurface {
 
     private InputOverlay mOverlay;
+    private final HashSet<Integer> mOverlayPointers = new HashSet<>();
 
     public InputOverlay getmOverlay() {
         return mOverlay;
@@ -35,32 +38,46 @@ public class EmuSurface extends SDLSurface {
 
     @Override
     public boolean onTouch(View v, MotionEvent event) {
-        final int pointerCount = event.getPointerCount();
-        final boolean[] owned = new boolean[pointerCount];
-        for (int i = 0; i < pointerCount; i++)
-            owned[i] = mOverlay.isPointerOwned(event.getPointerId(i));
-
+        final int action = event.getActionMasked();
         final boolean overlayConcerned = mOverlay.onTouch(v, event);
+        final boolean editing = mOverlay.isInEditMode();
 
-        if (mOverlay.isInEditMode())
-            return true;
-
-        boolean anyOwned = false;
-        for (int i = 0; i < pointerCount; i++) {
-            owned[i] = owned[i] || mOverlay.isPointerOwned(event.getPointerId(i));
-            anyOwned = anyOwned || owned[i];
+        if (action == MotionEvent.ACTION_DOWN)
+            mOverlayPointers.clear();
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+            final int id = event.getPointerId(event.getActionIndex());
+            if (editing || mOverlay.isPointerOwned(id))
+                mOverlayPointers.add(id);
+            else
+                mOverlayPointers.remove(id);
         }
 
-        if (!anyOwned)
-            return super.onTouch(v, event) || overlayConcerned;
+        boolean handled = true;
+        if (!editing) {
+            final int pointerCount = event.getPointerCount();
+            final boolean[] owned = new boolean[pointerCount];
+            boolean anyOwned = false;
+            for (int i = 0; i < pointerCount; i++) {
+                owned[i] = mOverlayPointers.contains(event.getPointerId(i));
+                anyOwned = anyOwned || owned[i];
+            }
 
-        MotionEvent filtered = filterOwnedPointers(event, owned);
-        if (filtered == null)
-            return true; // every pointer belongs to the overlay
+            if (!anyOwned) {
+                handled = super.onTouch(v, event) || overlayConcerned;
+            } else {
+                final MotionEvent filtered = filterOwnedPointers(event, owned);
+                if (filtered != null) {
+                    handled = super.onTouch(v, filtered) || overlayConcerned;
+                    filtered.recycle();
+                }
+            }
+        }
 
-        final boolean handled = super.onTouch(v, filtered);
-        filtered.recycle();
-        return handled || overlayConcerned;
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)
+            mOverlayPointers.clear();
+        else if (action == MotionEvent.ACTION_POINTER_UP)
+            mOverlayPointers.remove(event.getPointerId(event.getActionIndex()));
+        return handled;
     }
 
     private MotionEvent filterOwnedPointers(MotionEvent event, boolean[] owned) {

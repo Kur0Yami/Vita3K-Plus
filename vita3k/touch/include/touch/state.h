@@ -5,6 +5,8 @@
 #include <touch/touch.h>
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 
 struct TouchState {
     SceTouchSamplingState touch_mode[2] = { SCE_TOUCH_SAMPLING_STATE_STOP, SCE_TOUCH_SAMPLING_STATE_STOP };
@@ -20,6 +22,12 @@ struct TouchState {
     int touch_buffer_idx = 0;
     bool is_touchpad = false;
     SDL_TouchFingerEvent finger_buffer[8] = {};
+    uint64_t finger_first_seq[8] = {};
+    uint64_t finger_down_us[8] = {};
+    bool finger_lifted[8] = {};
+    std::atomic<uint64_t> sample_seq{ 0 };
+    std::atomic<uint64_t> last_read_seq[2]{};
+    std::mutex finger_mutex;
     SDL_GamepadTouchpadEvent touchpad_buffer[8] = {};
     uint8_t finger_count = 0;
     uint8_t touchpad_finger_count = 0;
@@ -36,6 +44,7 @@ struct TouchState {
     SceInt16 pinch_speed = 40;
 
     void reset_runtime() {
+        const std::lock_guard<std::mutex> lock(finger_mutex);
         touch_mode[0] = SCE_TOUCH_SAMPLING_STATE_STOP;
         touch_mode[1] = SCE_TOUCH_SAMPLING_STATE_STOP;
         mouse_x = 0.f;
@@ -49,6 +58,12 @@ struct TouchState {
         touch_buffer_idx = 0;
         is_touchpad = false;
         std::fill_n(finger_buffer, 8, SDL_TouchFingerEvent{});
+        std::fill_n(finger_first_seq, 8, uint64_t{ 0 });
+        std::fill_n(finger_down_us, 8, uint64_t{ 0 });
+        std::fill_n(finger_lifted, 8, false);
+        sample_seq.store(0);
+        last_read_seq[0].store(0);
+        last_read_seq[1].store(0);
         std::fill_n(touchpad_buffer, 8, SDL_GamepadTouchpadEvent{});
         finger_count = 0;
         touchpad_finger_count = 0;
