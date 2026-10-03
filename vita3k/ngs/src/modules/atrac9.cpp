@@ -73,16 +73,6 @@ void Atrac9Module::on_state_change(const MemState &mem, ModuleData &data, const 
     }
 }
 
-void Atrac9Module::on_param_change(const MemState &mem, ModuleData &data) {
-    Atrac9LogicalState *logical = data.get_logical_state<Atrac9LogicalState>();
-    const SceNgsAT9Params *old_params = reinterpret_cast<SceNgsAT9Params *>(data.last_info.data());
-    const SceNgsAT9Params *new_params = static_cast<SceNgsAT9Params *>(data.info.data.get(mem));
-
-    if (old_params->playback_frequency != new_params->playback_frequency || old_params->playback_scalar != new_params->playback_scalar) {
-        logical->rate_resampler.reset();
-    }
-}
-
 bool Atrac9Module::decode_more_data(KernelState &kern, const MemState &mem, const SceUID thread_id, ModuleData &data, const SceNgsAT9Params *params, SceNgsAT9States *state, Atrac9LogicalState *logical, Atrac9RuntimeState *runtime, std::unique_lock<std::recursive_mutex> &scheduler_lock, std::unique_lock<std::mutex> &voice_lock) {
     const SceNgsAT9BufferParams &bufparam = params->buffer_params[state->current_buffer];
 
@@ -339,7 +329,7 @@ bool Atrac9Module::decode_more_data(KernelState &kern, const MemState &mem, cons
     }
 
     const int32_t sample_rate = data.parent->rack->system->sample_rate;
-    if (params->playback_scalar != 1 || static_cast<int>(std::round(params->playback_frequency)) != sample_rate) {
+    if (logical->rate_resampler.continuous || params->playback_scalar != 1 || static_cast<int>(std::round(params->playback_frequency)) != sample_rate) {
         LOG_INFO_ONCE("The currently running game requests playback rate scaling when decoding audio. Audio might crackle.");
         double src_sample_rate = params->playback_frequency;
         if (params->playback_scalar != 1.0f) {

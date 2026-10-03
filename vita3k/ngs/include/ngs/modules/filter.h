@@ -19,6 +19,10 @@
 #include <ngs/system.h>
 #include <ngs/types.h>
 
+#include <array>
+#include <cstdint>
+#include <string>
+
 #define SCE_NGS_FILTER_PARAMS_STRUCT_ID 0x01015CE4
 #define SCE_NGS_FILTER_PARAMS_COEFF_STRUCT_ID 0x02015CE4
 
@@ -66,10 +70,60 @@ struct SceNgsFilterParamsCoEff {
 
 namespace ngs {
 
+struct BiquadCoefficients {
+    float b0 = 1.0f;
+    float b1 = 0.0f;
+    float b2 = 0.0f;
+    float a1 = 0.0f;
+    float a2 = 0.0f;
+};
+
+struct BiquadHistory {
+    float x1 = 0.0f;
+    float x2 = 0.0f;
+    float y1 = 0.0f;
+    float y2 = 0.0f;
+};
+
+using StereoBiquadHistory = std::array<BiquadHistory, 2>;
+
+enum class BiquadUse {
+    Apply,
+    Identity,
+    Silence,
+    Invalid,
+};
+
+bool design_biquad(const SceNgsParamFilter &band, int32_t sample_rate, BiquadCoefficients &coefficients);
+BiquadUse classify_biquad(const SceNgsParamCoEff &raw, BiquadCoefficients &coefficients);
+bool run_biquad(const BiquadCoefficients &c, StereoBiquadHistory &history, const float *input, float *output, int32_t frames);
+std::string describe_filter_band(const SceNgsParamFilter &band);
+std::string describe_biquad(const SceNgsParamCoEff &raw);
+uint64_t filter_band_shape(const SceNgsParamFilter &band);
+uint64_t biquad_shape(const SceNgsParamCoEff &raw);
+uint64_t combine_shape(uint64_t shape, uint64_t value);
+const char *biquad_use_name(BiquadUse use);
+
+int send_output_of(const ModuleData &data);
+float *main_signal_of(ModuleData &data);
+void share_main_signal(ModuleData &data);
+void log_effect_setting(const char *module, const ModuleData &data, uint64_t shape, const std::string &text);
+
+struct FilterLogicalState : public ModuleLogicalState {
+    std::array<uint8_t, sizeof(SceNgsFilterParamsCoEff)> last_params{};
+    bool have_params = false;
+    bool active = false;
+    bool processed_last_tick = false;
+    BiquadCoefficients coefficients;
+    StereoBiquadHistory history{};
+};
+
 class FilterModule : public Module {
 public:
     bool process(KernelState &kern, const MemState &mem, const SceUID thread_id, ModuleData &data, std::unique_lock<std::recursive_mutex> &scheduler_lock, std::unique_lock<std::mutex> &voice_lock) override;
     uint32_t module_id() const override { return 0x5CE4; }
+    std::unique_ptr<ModuleLogicalState> create_logical_state() const override { return std::make_unique<FilterLogicalState>(); }
+    void on_state_change(const MemState &mem, ModuleData &data, const VoiceState previous) override;
 
     static constexpr uint32_t get_max_parameter_size() {
         return std::max(sizeof(SceNgsFilterParams), sizeof(SceNgsFilterParamsCoEff));

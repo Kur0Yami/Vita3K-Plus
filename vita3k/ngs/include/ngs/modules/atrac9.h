@@ -121,7 +121,6 @@ public:
     std::unique_ptr<ModuleLogicalState> create_logical_state() const override;
     std::unique_ptr<ModuleRuntimeState> create_runtime_state() const override;
     void on_state_change(const MemState &mem, ModuleData &v, const VoiceState previous) override;
-    void on_param_change(const MemState &mem, ModuleData &data) override;
     void cleanup_voice_state(ModuleData &data) override;
     static void free_swr_contexts();
 

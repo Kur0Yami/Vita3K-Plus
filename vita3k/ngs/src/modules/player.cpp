@@ -64,7 +64,6 @@ void PlayerModule::on_state_change(const MemState &mem, ModuleData &data, const 
 }
 
 void PlayerModule::on_param_change(const MemState &mem, ModuleData &data) {
-    PlayerLogicalState *logical = data.get_logical_state<PlayerLogicalState>();
     const SceNgsPlayerParams *old_params = reinterpret_cast<SceNgsPlayerParams *>(data.last_info.data());
     SceNgsPlayerParams *new_params = static_cast<SceNgsPlayerParams *>(data.info.data.get(mem));
 
@@ -87,14 +86,6 @@ void PlayerModule::on_param_change(const MemState &mem, ModuleData &data) {
         if (is_invalid_playback_value(new_params->playback_frequency, 192000.f)) {
             new_params->playback_frequency = 48000.f;
         }
-    }
-
-    // if playback scaling changed, reset the rate resampler
-    if (old_params->playback_frequency != new_params->playback_frequency || old_params->playback_scalar != new_params->playback_scalar) {
-        ADPCMHistory hist_empty{};
-        std::fill_n(logical->adpcm_history, SCE_NGS_PLAYER_MAX_PCM_CHANNELS, hist_empty);
-
-        logical->rate_resampler.reset();
     }
 }
 
@@ -385,7 +376,7 @@ bool PlayerModule::process(KernelState &kern, const MemState &mem, const SceUID 
 
         // Playback rate scaling
         float src_sample_rate = params->playback_frequency;
-        if ((src_sample_rate >= 1.f) && ((params->playback_scalar != 1.f) || (static_cast<int>(src_sample_rate) != sample_rate))) {
+        if ((src_sample_rate >= 1.f) && (logical->rate_resampler.continuous || (params->playback_scalar != 1.f) || (static_cast<int>(src_sample_rate) != sample_rate))) {
             runtime->decoded_chunk.resize(static_cast<size_t>(samples_count.samples) * sizeof(float) * 2);
             runtime->decoder->receive(runtime->decoded_chunk.data(), nullptr);
 
