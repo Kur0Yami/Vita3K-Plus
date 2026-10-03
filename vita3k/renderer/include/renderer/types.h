@@ -168,6 +168,7 @@ struct Context {
     CommandAllocFunc alloc_func;
     CommandFreeFunc free_func;
     std::function<std::string()> describe_command_allocator;
+    std::vector<CommandSlot> command_ring;
 
     int render_finish_status = 0;
     int notification_finish_status = 0;

@@ -39,7 +39,6 @@ void set_touch_mode(TouchState &state, int mode) {
     state.touchscreen_port = (mode == 1) ? SCE_TOUCH_PORT_BACK : SCE_TOUCH_PORT_FRONT;
     state.touchscreen_both = (mode == 2);
     state.touchscreen_tilt = (mode == 3);
-    LOG_INFO("[TILT] touchscreen mode {}", mode);
 }
 
 static void set_tilt_target(TouchState &state, const float x, const float y) {

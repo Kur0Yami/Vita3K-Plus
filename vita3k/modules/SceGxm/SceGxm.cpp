@@ -990,6 +990,8 @@ static std::mutex mtx;
 static std::unordered_set<const renderer::CommandList *> lists;
 } // namespace command_list_registry
 
+static constexpr uint32_t IMMEDIATE_COMMAND_RING_SLOTS = 65536;
+
 static Ptr<void> gxmRunDeferredMemoryCallback(KernelState &kernel, const MemState &mem, std::mutex &global_lock, std::uint32_t &return_size, Ptr<SceGxmDeferredContextCallback> callback, Ptr<void> userdata,
     const std::uint32_t size, const SceUID thread_id) {
     const std::uint32_t min_size = std::max<std::uint32_t>(1024, size + 4);
@@ -1183,7 +1185,8 @@ struct SceGxmContext {
             actual_size = state.vdm_buffer_size;
 
             if (state.type == SCE_GXM_CONTEXT_TYPE_IMMEDIATE) {
-                command_allocator_size = state.vdm_buffer_size / sizeof(renderer::Command);
+                renderer->command_ring.resize(IMMEDIATE_COMMAND_RING_SLOTS);
+                command_allocator_size = IMMEDIATE_COMMAND_RING_SLOTS;
                 command_next_free_pos = 0;
                 command_last_free_pos = command_allocator_size - 1;
             } else {
@@ -1240,7 +1243,7 @@ struct SceGxmContext {
             if (command_allocator_size > 0 && command_next_free_pos <= command_last_free_pos.load(std::memory_order_acquire)) {
                 size_t offset = command_next_free_pos % command_allocator_size;
                 command_next_free_pos++;
-                new_command = alloc_space.cast<renderer::Command>().get(mem) + offset;
+                new_command = reinterpret_cast<renderer::Command *>(renderer->command_ring.data()) + offset;
                 new (new_command) renderer::Command;
             } else {
                 new_command = new renderer::Command;
@@ -2150,12 +2153,12 @@ EXPORT(int, sceGxmCreateContext, const SceGxmContextParams *params, Ptr<SceGxmCo
         return ctx->free_new_command(cmd);
     };
 
-    ctx->renderer->describe_command_allocator = [ctx, mem]() {
-        const renderer::Command *ring = ctx->alloc_space.cast<renderer::Command>().get(*mem);
+    ctx->renderer->describe_command_allocator = [ctx]() {
+        const renderer::Command *ring = reinterpret_cast<const renderer::Command *>(ctx->renderer->command_ring.data());
         const size_t last_free = ctx->command_last_free_pos.load(std::memory_order_relaxed);
         const size_t size = ctx->command_allocator_size;
-        return fmt::format("immediate ring {}..{} ({} slots) in guest vdm 0x{:08X} | alloc_pos {} free_pos {} outstanding {}",
-            fmt::ptr(ring), fmt::ptr(ring + size), size, ctx->alloc_space.address(),
+        return fmt::format("immediate host ring {}..{} ({} slots) | alloc_pos {} free_pos {} outstanding {}",
+            fmt::ptr(ring), fmt::ptr(ring + size), size,
             ctx->command_next_free_pos, last_free,
             static_cast<int64_t>(ctx->command_next_free_pos) - static_cast<int64_t>(last_free) + static_cast<int64_t>(size) - 1);
     };
@@ -2908,12 +2911,9 @@ EXPORT(int, sceGxmFinish, SceGxmContext *context) {
     if (!context)
         return RET_ERROR(SCE_GXM_ERROR_INVALID_THREAD);
 
-    // a deferred context has no command allocator outside a command list so its wait uses the generic one
-    renderer::Context *const wait_context = context->state.type == SCE_GXM_CONTEXT_TYPE_IMMEDIATE ? context->renderer.get() : nullptr;
-
     // Wait on this context's rendering finish code.
     guest_sched_release_for_block();
-    renderer::finish(*emuenv.renderer, wait_context);
+    renderer::finish(*emuenv.renderer, nullptr);
 
     return 0;
 }

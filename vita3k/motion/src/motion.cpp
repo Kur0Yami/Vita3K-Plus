@@ -298,18 +298,6 @@ void handle_motion_event(EmuEnvState &emuenv, int32_t sensor_type, const SDL_Gam
 }
 
 void set_touch_tilt(MotionState &state, const CtrlState &ctrl_state, const bool active, const float x, const float y) {
-    static bool was_active = false;
-    static uint32_t active_frames = 0;
-    static float peak_gyro = 0.0f;
-    if (active != was_active) {
-        LOG_INFO("[TILT] touch tilt {} at x {:.2f} y {:.2f} | game sampling {} controller motion {} device motion {} touch tilt driving the sensors {} | peak gyro since the last change {:.2f} rad/s, tilt now {:.1f} deg, turn now {:.1f} deg",
-            active ? "pressed" : "released", x, y, state.is_sampling, ctrl_state.has_motion_support, state.has_device_motion_support, state.synthetic_tilt,
-            peak_gyro, state.synthetic_rotation.Length() * 180.0f / std::numbers::pi_v<float>, state.synthetic_turn * 180.0f / std::numbers::pi_v<float>);
-        was_active = active;
-        active_frames = 0;
-        peak_gyro = 0.0f;
-    }
-
     if (!state.is_sampling)
         return;
 
@@ -322,7 +310,6 @@ void set_touch_tilt(MotionState &state, const CtrlState &ctrl_state, const bool 
             state.synthetic_turn = 0.0f;
             state.synthetic_turn_rate = 0.0f;
             state.synthetic_gyro = {};
-            LOG_INFO("[TILT] a real gyro is present, touch tilt stops driving the motion sensors");
         }
         return;
     }
@@ -350,7 +337,6 @@ void set_touch_tilt(MotionState &state, const CtrlState &ctrl_state, const bool 
         state.synthetic_rotation_rate = {};
         state.synthetic_turn = 0.0f;
         state.synthetic_turn_rate = 0.0f;
-        LOG_INFO("[TILT] touch tilt now drives the motion sensors (yaw offset {:.3f})", state.synthetic_yaw);
     } else if (now > state.synthetic_timestamp) {
         dt = std::min(static_cast<float>(now - state.synthetic_timestamp) / 1000000.0f, 0.1f);
     }
@@ -387,23 +373,9 @@ void set_touch_tilt(MotionState &state, const CtrlState &ctrl_state, const bool 
         step = { -step.xyz, -step.w };
     const float half_sine = step.xyz.Length();
     state.synthetic_gyro = half_sine > 0.0f ? step.xyz * (2.0f * std::atan2(half_sine, step.w) / half_sine / dt) : Util::Vec3f{};
-    peak_gyro = std::max(peak_gyro, state.synthetic_gyro.Length());
 
     state.motion_data.SetAcceleration(Util::QuaternionRotate(current.Inverse(), Util::Vec3f{ 0.0f, 0.0f, -1.0f }));
     state.last_updated_accel_timestamp = now;
-
-    if (active && (active_frames++ % 60) == 0) {
-        const auto quat = synthetic_orientation(state);
-        const auto accel = state.motion_data.GetAcceleration();
-        const auto basic = state.motion_data.GetBasicOrientation();
-        const auto &gyro = state.synthetic_gyro;
-        const float steering = std::atan2(2.0f * (quat.xyz[0] * quat.xyz[1] - quat.w * quat.xyz[2]), 1.0f - 2.0f * (quat.xyz[1] * quat.xyz[1] + quat.xyz[2] * quat.xyz[2]));
-        LOG_INFO("[TILT] touch x {:.2f} y {:.2f} -> target tilt {:.1f} deg turn {:.1f} deg, now tilt {:.1f} deg turn {:.1f} deg | game sees accel {:.3f} {:.3f} {:.3f} gyro {:.3f} {:.3f} {:.3f} rad/s quat {:.3f} {:.3f} {:.3f} {:.3f} matrix steering {:.1f} deg basic {:.0f} {:.0f} {:.0f} | yaw offset {:.3f}",
-            x, y, target.Length() * 180.0f / std::numbers::pi_v<float>, target_turn * 180.0f / std::numbers::pi_v<float>,
-            state.synthetic_rotation.Length() * 180.0f / std::numbers::pi_v<float>, state.synthetic_turn * 180.0f / std::numbers::pi_v<float>,
-            accel.x, accel.y, accel.z, gyro.x, gyro.y, gyro.z, quat.xyz[0], quat.xyz[1], quat.xyz[2], quat.w, steering * 180.0f / std::numbers::pi_v<float>,
-            basic.x, basic.y, basic.z, state.synthetic_yaw);
-    }
 }
 
 void refresh_motion(MotionState &state, CtrlState &ctrl_state) {
