@@ -84,7 +84,7 @@ struct PlayerLogicalState : public ModuleLogicalState {
     // preserve HE-ADPCM predictor history so the runtime decoder can be rebuilt
     ADPCMHistory adpcm_history[SCE_NGS_PLAYER_MAX_PCM_CHANNELS] = {};
     bool requested_initial_buffer = false;
-    int8_t starved_ticks = 0;
+    uint32_t first_data_wait_ticks = 0;
     bool lead_in_pending = false;
     uint32_t lead_in_samples_left = 0;
     uint64_t samples_played = 0;

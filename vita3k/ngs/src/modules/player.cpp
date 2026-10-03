@@ -29,6 +29,30 @@ static int32_t valid_buffer_index(const int32_t index) {
     return (index >= 0 && index < SCE_NGS_PLAYER_MAX_BUFFERS) ? index : -1;
 }
 
+static int32_t first_buffer_with_data(const SceNgsPlayerParams *params, int32_t index) {
+    for (int32_t visited = 0; visited <= SCE_NGS_PLAYER_MAX_BUFFERS && index != -1; visited++) {
+        const SceNgsPlayerBufferParams &buffer = params->buffer_params[index];
+        if (buffer.buffer && buffer.bytes_count > 0)
+            return index;
+        index = valid_buffer_index(buffer.next_buffer_index);
+    }
+    return -1;
+}
+
+static void log_buffer_event(std::atomic<uint32_t> &count, const char *event, const ModuleData &data, const SceNgsPlayerParams *params, const SceNgsPlayerStates *state, const std::string &detail) {
+    static std::atomic<uint32_t> lines{ 0 };
+    if (lines.fetch_add(1, std::memory_order_relaxed) >= 20000)
+        return;
+    std::string chain;
+    for (int32_t i = 0; i < SCE_NGS_PLAYER_MAX_BUFFERS; i++) {
+        const SceNgsPlayerBufferParams &b = params->buffer_params[i];
+        chain += fmt::format(" [{}: 0x{:08X} {} bytes loop {} next {}]", i, b.buffer.address(), b.bytes_count, b.loop_count, b.next_buffer_index);
+    }
+    LOG_INFO("[NGSBUF] player {} #{} voice={} type {} play {}: {} | buffer {} byte {} consumed {} bytes | start buffer {} | chain{}", event,
+        count.fetch_add(1, std::memory_order_relaxed) + 1, fmt::ptr(data.parent), static_cast<int>(data.parent->rack->vdef->type),
+        data.parent->play_count, detail, state->current_buffer, state->current_byte_position_in_buffer, state->bytes_consumed_since_key_on, static_cast<int>(params->start_buffer), chain);
+}
+
 std::unique_ptr<ModuleLogicalState> PlayerModule::create_logical_state() const {
     return std::make_unique<PlayerLogicalState>();
 }
@@ -52,7 +76,7 @@ void PlayerModule::on_state_change(const MemState &mem, ModuleData &data, const 
         logical->rate_resampler.reset();
         logical->adpcm_buffer.clear();
         logical->requested_initial_buffer = false;
-        logical->starved_ticks = 0;
+        logical->first_data_wait_ticks = 0;
         logical->lead_in_pending = true;
         logical->samples_played = 0;
 
@@ -199,59 +223,38 @@ bool PlayerModule::process(KernelState &kern, const MemState &mem, const SceUID 
     if (limit > 0)
         wanted = static_cast<uint32_t>(std::min<uint64_t>(wanted, static_cast<uint64_t>(limit) - std::min<uint64_t>(logical->samples_played, limit)));
 
-    constexpr int8_t max_starved_ticks = 16;
-
+    static std::atomic<uint32_t> skips{ 0 }, waits{ 0 }, first_data{ 0 }, ends{ 0 };
     while (logical->decoded_pcm.available_frames() < wanted) {
         state->current_buffer = valid_buffer_index(state->current_buffer);
-        if ((state->current_buffer == -1)
-            || !params->buffer_params[state->current_buffer].buffer
-            || (params->buffer_params[state->current_buffer].bytes_count == 0)) {
-            // A buffer of zero bytes has no samples so follow the chain to those that do have audio instead of waiting
-            if (state->current_buffer != -1) {
-                const int32_t entered_from = state->current_buffer;
-                int hops = 0;
-                while (hops < SCE_NGS_PLAYER_MAX_BUFFERS
-                    && state->current_buffer != -1
-                    && (!params->buffer_params[state->current_buffer].buffer
-                        || params->buffer_params[state->current_buffer].bytes_count == 0)) {
-                    const int32_t next = valid_buffer_index(params->buffer_params[state->current_buffer].next_buffer_index);
-                    if (next == -1 || next == state->current_buffer)
-                        break;
-                    state->current_buffer = next;
-                    state->current_byte_position_in_buffer = 0;
-                    logical->current_loop_count = 0;
-                    hops++;
-                }
-                if (hops > 0
-                    && state->current_buffer != -1
-                    && params->buffer_params[state->current_buffer].buffer
-                    && params->buffer_params[state->current_buffer].bytes_count > 0)
-                    continue;
-                state->current_buffer = entered_from;
-            }
+        const int32_t playable = first_buffer_with_data(params, state->current_buffer);
+        if (playable == -1) {
             if (state->bytes_consumed_since_key_on == 0) {
-                if (request_initial_buffer()
-                    && state->current_buffer != -1
-                    && params->buffer_params[state->current_buffer].buffer
-                    && params->buffer_params[state->current_buffer].bytes_count > 0)
+                if (request_initial_buffer() && first_buffer_with_data(params, state->current_buffer) != -1)
                     continue;
-                break; // wait for the next tick — do NOT finish/key off
-            }
-            if (state->current_buffer != -1 && logical->starved_ticks < max_starved_ticks) {
-                logical->starved_ticks++;
-                LOG_WARN_ONCE("NGS player: stream underrun mid-voice, waiting for the game to publish the next buffer (was previously treated as end-of-stream)");
+                if (logical->first_data_wait_ticks++ == 0)
+                    log_buffer_event(waits, "waits for its first data", data, params, state, "nothing to play yet");
                 break;
             }
-            if (state->current_buffer != -1) {
-                voice_lock.unlock();
-                scheduler_lock.unlock();
-                data.invoke_callback(kern, mem, thread_id, SCE_NGS_PLAYER_END_OF_DATA, 0, 0);
-                scheduler_lock.lock();
-                voice_lock.lock();
-            }
+            log_buffer_event(ends, "ends on an empty chain", data, params, state, fmt::format("{} samples played", logical->samples_played));
+            voice_lock.unlock();
+            scheduler_lock.unlock();
+            data.invoke_callback(kern, mem, thread_id, SCE_NGS_PLAYER_END_OF_DATA, 0, 0);
+            scheduler_lock.lock();
+            voice_lock.lock();
             finished = true;
             break;
-        } else if (state->current_byte_position_in_buffer >= params->buffer_params[state->current_buffer].bytes_count) {
+        }
+        if (logical->first_data_wait_ticks > 0) {
+            log_buffer_event(first_data, "got its first data", data, params, state, fmt::format("after {} ticks, at buffer {}", logical->first_data_wait_ticks, playable));
+            logical->first_data_wait_ticks = 0;
+        }
+        if (playable != state->current_buffer) {
+            log_buffer_event(skips, "skips empty buffers", data, params, state, fmt::format("{} -> {}", state->current_buffer, playable));
+            state->current_buffer = playable;
+            state->current_byte_position_in_buffer = 0;
+            logical->current_loop_count = 0;
+        }
+        if (state->current_byte_position_in_buffer >= params->buffer_params[state->current_buffer].bytes_count) {
             const int32_t prev_index = state->current_buffer;
             state->current_byte_position_in_buffer = 0;
             logical->current_loop_count++;
@@ -295,8 +298,6 @@ bool PlayerModule::process(KernelState &kern, const MemState &mem, const SceUID 
             finished = true;
             break;
         }
-
-        logical->starved_ticks = 0;
 
         runtime->decoder->source_channels = params->channels;
         runtime->decoder->source_frequency = params->playback_frequency;

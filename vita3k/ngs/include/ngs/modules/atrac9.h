@@ -95,11 +95,11 @@ struct Atrac9LogicalState : public ModuleLogicalState {
     uint32_t decoder_config = 0;
     // preserve the decoder's MDCT history so the runtime decoder can be rebuilt
     Atrac9DecoderSavedState saved_state{};
-    int8_t starved_ticks = 0;
-    bool in_underrun_wait = false;
     bool lead_in_pending = false;
     uint32_t lead_in_samples_left = 0;
     uint64_t samples_played = 0;
+    bool reached_data = false;
+    uint32_t first_data_wait_ticks = 0;
 };
 
 struct Atrac9RuntimeState : public ModuleRuntimeState {
