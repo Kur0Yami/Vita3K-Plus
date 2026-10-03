@@ -21,8 +21,23 @@
 #include <motion/functions.h>
 #include <motion/motion.h>
 
+#include <cmath>
+#include <numbers>
+
 #include <util/tracy.h>
 TRACY_MODULE_NAME(SceMotion);
+
+static void log_motion_call(const char *call, const std::string &detail) {
+    static std::atomic<uint32_t> lines{ 0 };
+    if (lines.fetch_add(1, std::memory_order_relaxed) < 2000)
+        LOG_INFO("[TILT] game calls {}{}", call, detail);
+}
+
+static void count_motion_read(const char *call, std::atomic<uint32_t> &count) {
+    const uint32_t n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n == 1 || (n % 3600) == 0)
+        LOG_INFO("[TILT] game reads {} ({} calls)", call, n);
+}
 
 EXPORT(SceFloat, sceMotionGetAngleThreshold) {
     TRACY_FUNC(sceMotionGetAngleThreshold);
@@ -37,6 +52,8 @@ EXPORT(int, sceMotionGetBasicOrientation, SceFVector3 *basicOrientation) {
     if (basicOrientation == nullptr) {
         return RET_ERROR(SCE_MOTION_ERROR_NULL_PARAMETER);
     }
+    static std::atomic<uint32_t> reads{ 0 };
+    count_motion_read("sceMotionGetBasicOrientation", reads);
 
     std::lock_guard<std::mutex> guard(emuenv.motion.mutex);
 
@@ -81,8 +98,10 @@ EXPORT(int, sceMotionGetSensorState, SceMotionSensorState *sensorState, int numR
     if (sensorState == nullptr) {
         return RET_ERROR(SCE_MOTION_ERROR_NULL_PARAMETER);
     }
+    static std::atomic<uint32_t> reads{ 0 };
+    count_motion_read("sceMotionGetSensorState", reads);
 
-    if ((emuenv.ctrl.has_motion_support || emuenv.motion.has_device_motion_support) && !emuenv.cfg.disable_motion) {
+    if ((emuenv.ctrl.has_motion_support || emuenv.motion.has_device_motion_support || emuenv.motion.synthetic_tilt) && !emuenv.cfg.disable_motion) {
         std::lock_guard<std::mutex> guard(emuenv.motion.mutex);
         sensorState->accelerometer = get_acceleration(emuenv.motion);
         sensorState->gyro = get_gyroscope(emuenv.motion);
@@ -118,8 +137,10 @@ EXPORT(int, sceMotionGetState, SceMotionState *motionState) {
     if (motionState == nullptr) {
         return RET_ERROR(SCE_MOTION_ERROR_NULL_PARAMETER);
     }
+    static std::atomic<uint32_t> reads{ 0 };
+    count_motion_read("sceMotionGetState", reads);
 
-    if ((emuenv.ctrl.has_motion_support || emuenv.motion.has_device_motion_support) && !emuenv.cfg.disable_motion) {
+    if ((emuenv.ctrl.has_motion_support || emuenv.motion.has_device_motion_support || emuenv.motion.synthetic_tilt) && !emuenv.cfg.disable_motion) {
         std::lock_guard<std::mutex> guard(emuenv.motion.mutex);
         motionState->timestamp = emuenv.motion.last_accel_timestamp;
 
@@ -199,9 +220,11 @@ EXPORT(int, sceMotionMagnetometerOn) {
 
 EXPORT(int, sceMotionReset) {
     TRACY_FUNC(sceMotionReset);
+    log_motion_call("sceMotionReset", "");
     std::lock_guard<std::mutex> guard(emuenv.motion.mutex);
     emuenv.motion.motion_data.ResetQuaternion();
     emuenv.motion.motion_data.ResetRotations();
+    emuenv.motion.synthetic_yaw = 0.0f;
     return SCE_MOTION_OK;
 }
 
@@ -212,12 +235,16 @@ EXPORT(int, sceMotionResetExt) {
 
 EXPORT(int, sceMotionRotateYaw, const float radians) {
     TRACY_FUNC(sceMotionRotateYaw, radians);
+    log_motion_call("sceMotionRotateYaw", fmt::format(" {:.3f}", radians));
+    std::lock_guard<std::mutex> guard(emuenv.motion.mutex);
     emuenv.motion.motion_data.RotateYaw(radians);
+    emuenv.motion.synthetic_yaw = std::remainder(emuenv.motion.synthetic_yaw + radians, 2.0f * std::numbers::pi_v<float>);
     return SCE_MOTION_OK;
 }
 
 EXPORT(int, sceMotionSetAngleThreshold, SceFloat angle) {
     TRACY_FUNC(sceMotionSetAngleThreshold, angle);
+    log_motion_call("sceMotionSetAngleThreshold", fmt::format(" {:.1f}", angle));
     if (std::isnan(angle) || angle > 45.0f) {
         return SCE_MOTION_ERROR_ANGLE_OUT_OF_RANGE;
     }
@@ -228,6 +255,7 @@ EXPORT(int, sceMotionSetAngleThreshold, SceFloat angle) {
 
 EXPORT(int, sceMotionSetDeadband, SceBool setValue) {
     TRACY_FUNC(sceMotionSetDeadband, setValue);
+    log_motion_call("sceMotionSetDeadband", fmt::format(" {}", setValue));
     set_deadband(emuenv.motion, setValue);
 
     return SCE_MOTION_OK;
@@ -240,6 +268,7 @@ EXPORT(int, sceMotionSetDeadbandExt) {
 
 EXPORT(int, sceMotionSetGyroBiasCorrection, SceBool setValue) {
     TRACY_FUNC(sceMotionSetGyroBiasCorrection, setValue);
+    log_motion_call("sceMotionSetGyroBiasCorrection", fmt::format(" {}", setValue));
     set_gyro_bias_correction(emuenv.motion, setValue);
 
     return SCE_MOTION_OK;
@@ -247,6 +276,7 @@ EXPORT(int, sceMotionSetGyroBiasCorrection, SceBool setValue) {
 
 EXPORT(int, sceMotionSetTiltCorrection, SceBool setValue) {
     TRACY_FUNC(sceMotionSetTiltCorrection, setValue);
+    log_motion_call("sceMotionSetTiltCorrection", fmt::format(" {}", setValue));
     set_tilt_correction(emuenv.motion, setValue);
 
     return SCE_MOTION_OK;
@@ -259,6 +289,7 @@ EXPORT(int, sceMotionSetTiltCorrectionExt) {
 
 EXPORT(int, sceMotionStartSampling) {
     TRACY_FUNC(sceMotionStartSampling);
+    log_motion_call("sceMotionStartSampling", "");
     if (emuenv.motion.is_sampling) {
         return SCE_MOTION_ERROR_ALREADY_SAMPLING;
     }
@@ -274,6 +305,7 @@ EXPORT(int, sceMotionStartSamplingExt) {
 
 EXPORT(int, sceMotionStopSampling) {
     TRACY_FUNC(sceMotionStopSampling);
+    log_motion_call("sceMotionStopSampling", "");
     if (!emuenv.motion.is_sampling) {
         return SCE_MOTION_ERROR_NOT_SAMPLING;
     }

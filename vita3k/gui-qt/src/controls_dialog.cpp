@@ -640,6 +640,7 @@ void ControlsDialog::build_hotkeys_page() {
     add_row(5, tr("Pinch Modifier"), m_hotkeys_page.btn_pinch_mod, m_hotkeys_page.btn_pinch_mod_alt);
     add_row(6, tr("Alternate Pinch In"), m_hotkeys_page.btn_alt_pinch_in, m_hotkeys_page.btn_alt_pinch_in_alt);
     add_row(7, tr("Alternate Pinch Out"), m_hotkeys_page.btn_alt_pinch_out, m_hotkeys_page.btn_alt_pinch_out_alt);
+    add_row(8, tr("Tilt Toward Pointer (Hold)"), m_hotkeys_page.btn_tilt, m_hotkeys_page.btn_tilt_alt);
 
     content_layout->addWidget(rows_widget);
     content_layout->addStretch();
@@ -877,6 +878,8 @@ void ControlsDialog::init_keyboard_bindings() {
         { m_hotkeys_page.btn_fullscreen_alt, &cfg.keyboard_gui_fullscreen_alt },
         { m_hotkeys_page.btn_toggle_touch, &cfg.keyboard_gui_toggle_touch },
         { m_hotkeys_page.btn_toggle_touch_alt, &cfg.keyboard_gui_toggle_touch_alt },
+        { m_hotkeys_page.btn_tilt, &cfg.keyboard_gui_tilt },
+        { m_hotkeys_page.btn_tilt_alt, &cfg.keyboard_gui_tilt_alt },
         { m_hotkeys_page.btn_tex_replace, &cfg.keyboard_toggle_texture_replacement },
         { m_hotkeys_page.btn_tex_replace_alt, &cfg.keyboard_toggle_texture_replacement_alt },
         { m_hotkeys_page.btn_screenshot, &cfg.keyboard_take_screenshot },

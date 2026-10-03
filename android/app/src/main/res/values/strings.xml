@@ -533,6 +533,8 @@
     <string name="settings_controls_l3r3_desc">Add the stick-click buttons to the touch overlay.</string>
     <string name="settings_controls_touch_switch">Show Touchscreen Switch</string>
     <string name="settings_controls_touch_switch_desc">Show the button that switches between front and rear touch input.</string>
+    <string name="settings_controls_touch_switch_tilt">Tilt in Touchscreen Switch</string>
+    <string name="settings_controls_touch_switch_tilt_desc">Add a T step to the touchscreen switch, after F, B and F+B. In that step, touching the screen tilts the console towards your finger instead of touching it, for games that need the motion sensor. It only works when neither this device nor the controller has a gyroscope.</string>
     <string name="settings_controls_hide_toggle">Show Hide Toggle</string>
     <string name="settings_controls_hide_toggle_desc">Show the button that temporarily hides the on-screen controls.</string>
     <string name="settings_controls_scale">Overlay Scale</string>

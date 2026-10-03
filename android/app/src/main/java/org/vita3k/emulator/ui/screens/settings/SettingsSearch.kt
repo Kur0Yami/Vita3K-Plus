@@ -106,6 +106,7 @@ internal fun rememberSettingsSearchEntries(
         add(entry(SettingsCategory.Controls, R.string.settings_controls_l2r2, R.string.settings_controls_l2r2_desc, scope = SettingsScope.Global, keywords = "touch triggers shoulder buttons"))
         add(entry(SettingsCategory.Controls, R.string.settings_controls_l3r3, R.string.settings_controls_l3r3_desc, scope = SettingsScope.Global, keywords = "touch stick clicks l3 r3"))
         add(entry(SettingsCategory.Controls, R.string.settings_controls_touch_switch, R.string.settings_controls_touch_switch_desc, scope = SettingsScope.Global, keywords = "front rear touchscreen switch"))
+        add(entry(SettingsCategory.Controls, R.string.settings_controls_touch_switch_tilt, R.string.settings_controls_touch_switch_tilt_desc, scope = SettingsScope.Global, keywords = "tilt gyro motion touchscreen switch"))
         add(entry(SettingsCategory.Controls, R.string.settings_controls_hide_toggle, R.string.settings_controls_hide_toggle_desc, scope = SettingsScope.Global, keywords = "hide overlay button toggle"))
         add(entry(SettingsCategory.Controls, R.string.settings_controls_scale, R.string.settings_controls_scale_desc, scope = SettingsScope.Global, keywords = "overlay size"))
         add(entry(SettingsCategory.Controls, R.string.settings_controls_opacity, R.string.settings_controls_opacity_desc, scope = SettingsScope.Global, keywords = "overlay transparency"))

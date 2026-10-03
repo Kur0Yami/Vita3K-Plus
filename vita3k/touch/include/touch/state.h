@@ -15,9 +15,15 @@ struct TouchState {
     float mouse_y = 0;
     bool mouse_button_left = false;
     bool mouse_button_right = false;
+    bool mouse_button_middle = false;
+    bool tilt_key_held = false;
     bool renderer_focused = false;
     SceTouchPortType touchscreen_port = SCE_TOUCH_PORT_FRONT;
     bool touchscreen_both = false; // screen touches feed both ports
+    bool touchscreen_tilt = false;
+    bool tilt_active = false;
+    float tilt_x = 0.f;
+    float tilt_y = 0.f;
     SceTouchData touch_buffers[MAX_TOUCH_BUFFER_SAVED][2] = {};
     int touch_buffer_idx = 0;
     bool is_touchpad = false;
@@ -51,9 +57,15 @@ struct TouchState {
         mouse_y = 0.f;
         mouse_button_left = false;
         mouse_button_right = false;
+        mouse_button_middle = false;
+        tilt_key_held = false;
         renderer_focused = false;
         touchscreen_port = SCE_TOUCH_PORT_FRONT;
         touchscreen_both = false;
+        touchscreen_tilt = false;
+        tilt_active = false;
+        tilt_x = 0.f;
+        tilt_y = 0.f;
         std::fill_n(touch_buffers[0], MAX_TOUCH_BUFFER_SAVED * 2, SceTouchData{});
         touch_buffer_idx = 0;
         is_touchpad = false;

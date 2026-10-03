@@ -29,13 +29,25 @@
 
 #include <SDL3/SDL_events.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 
 void set_touch_mode(TouchState &state, int mode) {
     state.touchscreen_port = (mode == 1) ? SCE_TOUCH_PORT_BACK : SCE_TOUCH_PORT_FRONT;
     state.touchscreen_both = (mode == 2);
+    state.touchscreen_tilt = (mode == 3);
+    LOG_INFO("[TILT] touchscreen mode {}", mode);
+}
+
+static void set_tilt_target(TouchState &state, const float x, const float y) {
+    if (!std::isfinite(x) || !std::isfinite(y))
+        return;
+    state.tilt_active = true;
+    state.tilt_x = std::clamp(x * 2.0f - 1.0f, -1.0f, 1.0f);
+    state.tilt_y = std::clamp(y * 2.0f - 1.0f, -1.0f, 1.0f);
 }
 
 constexpr uint64_t TOUCH_LATCH_US = 100000;
@@ -156,7 +168,19 @@ void touch_vsync_update(EmuEnvState &emuenv) {
 #else
     constexpr bool on_android = false;
 #endif
+    touch.tilt_active = false;
     if (touch.finger_count > 0 || touch.touchpad_finger_count > 0 || on_android) {
+        const bool fingers_tilt = touch.touchscreen_tilt && !touch.is_touchpad;
+        if (fingers_tilt) {
+            for (int i = 0; i < touch.finger_count; i++) {
+                if (touch.finger_lifted[i])
+                    continue;
+                set_tilt_target(touch,
+                    (touch.finger_buffer[i].x * emuenv.display.viewport_drawable_w - emuenv.display.viewport_x) / emuenv.display.viewport_w,
+                    (touch.finger_buffer[i].y * emuenv.display.viewport_drawable_h - emuenv.display.viewport_y) / emuenv.display.viewport_h);
+                break;
+            }
+        }
         SceTouchData *buffers = touch.touch_buffers[(touch.touch_buffer_idx + 1) % MAX_TOUCH_BUFFER_SAVED];
         for (int port = 0; port < 2; port++) {
             buffers[port].status = 0;
@@ -164,7 +188,7 @@ void touch_vsync_update(EmuEnvState &emuenv) {
             buffers[port].timeStamp = timestamp;
         }
         for (int port = 0; port < 2; port++) {
-            if (!touch.touchscreen_both && port != touch.touchscreen_port)
+            if (fingers_tilt || (!touch.touchscreen_both && port != touch.touchscreen_port))
                 continue;
             SceTouchData touch_data = touch.is_touchpad ? recover_touchpad_events(emuenv, port) : recover_touch_events(emuenv, port);
             touch_data.timeStamp = timestamp;
@@ -180,6 +204,10 @@ void touch_vsync_update(EmuEnvState &emuenv) {
         bool left = ts.mouse_button_left;
         bool right = ts.mouse_button_right;
         left = left || touch.pinch_modifier_enabled;
+
+        if ((ts.mouse_button_middle || ts.tilt_key_held) && allow_mouse_touch)
+            set_tilt_target(touch, (mouse_x - emuenv.display.viewport_x) / emuenv.display.viewport_w,
+                (mouse_y - emuenv.display.viewport_y) / emuenv.display.viewport_h);
 
         for (int port = 0; port < 2; port++) {
             // do it for both the front and the back touchscreen

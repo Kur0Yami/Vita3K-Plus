@@ -49,6 +49,7 @@
 #include <chrono>
 #include <motion/functions.h>
 #include <touch/functions.h>
+#include <touch/state.h>
 
 // Code heavily influenced by PPSSSPP's SceDisplay.cpp
 
@@ -148,6 +149,7 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
 
             // maybe we should also use a mutex for this part, but it shouldn't be an issue
             touch_vsync_update(emuenv);
+            set_touch_tilt(emuenv.motion, emuenv.ctrl, emuenv.touch.tilt_active, emuenv.touch.tilt_x, emuenv.touch.tilt_y);
             refresh_motion(emuenv.motion, emuenv.ctrl);
 
             // Notify Vblank callback in each VBLANK start

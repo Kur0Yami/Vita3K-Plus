@@ -99,6 +99,7 @@ bool ThreadState::wait_for_run_precise(std::unique_lock<std::mutex> &lock, int64
 
 // LOG_DEBUG is compiled out, so set this true to get every thread creation back rather than one per shape
 static constexpr bool LOG_EVERY_THREAD_CREATION = false;
+static constexpr uint32_t INITIAL_FPSCR_FLUSH_TO_ZERO_DEFAULT_NAN = 0x03000000;
 
 int ThreadState::init(const char *name, Ptr<const void> entry_point, int init_priority, SceInt32 affinity_mask, int stack_size, const SceKernelThreadOptParam *option = nullptr) {
     constexpr size_t KERNEL_TLS_SIZE = 0x800;
@@ -179,6 +180,7 @@ int ThreadState::init(const char *name, Ptr<const void> entry_point, int init_pr
 
     CPUContext ctx;
     ctx.set_sp(stack_top());
+    ctx.fpscr = INITIAL_FPSCR_FLUSH_TO_ZERO_DEFAULT_NAN;
     if (option) {
         ctx.cpu_registers[0] = option->attr;
         ctx.cpu_registers[1] = option->size;

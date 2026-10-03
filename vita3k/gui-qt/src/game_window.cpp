@@ -497,6 +497,8 @@ void GameWindow::mousePressEvent(QMouseEvent *e) {
         touch.mouse_button_left = true;
     if (e->button() == Qt::RightButton)
         touch.mouse_button_right = true;
+    if (e->button() == Qt::MiddleButton)
+        touch.mouse_button_middle = true;
 }
 
 void GameWindow::mouseReleaseEvent(QMouseEvent *e) {
@@ -506,6 +508,8 @@ void GameWindow::mouseReleaseEvent(QMouseEvent *e) {
         touch.mouse_button_left = false;
     if (e->button() == Qt::RightButton)
         touch.mouse_button_right = false;
+    if (e->button() == Qt::MiddleButton)
+        touch.mouse_button_middle = false;
 }
 
 void GameWindow::mouseMoveEvent(QMouseEvent *e) {
@@ -520,6 +524,8 @@ void GameWindow::focusOutEvent(QFocusEvent *) {
     m_emuenv.touch.renderer_focused = false;
     m_emuenv.touch.mouse_button_left = false;
     m_emuenv.touch.mouse_button_right = false;
+    m_emuenv.touch.mouse_button_middle = false;
+    m_emuenv.touch.tilt_key_held = false;
 }
 
 void GameWindow::toggle_fullscreen() {
