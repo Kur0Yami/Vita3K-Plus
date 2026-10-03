@@ -45,20 +45,6 @@ static int32_t first_buffer_with_data(const SceNgsAT9Params *params, int32_t ind
     return -1;
 }
 
-static void log_buffer_event(std::atomic<uint32_t> &count, const char *event, const ModuleData &data, const SceNgsAT9Params *params, const SceNgsAT9States *state, const std::string &detail) {
-    static std::atomic<uint32_t> lines{ 0 };
-    if (lines.fetch_add(1, std::memory_order_relaxed) >= 20000)
-        return;
-    std::string chain;
-    for (int32_t i = 0; i < SCE_NGS_AT9_MAX_BUFFER_PARAMS; i++) {
-        const SceNgsAT9BufferParams &b = params->buffer_params[i];
-        chain += fmt::format(" [{}: 0x{:08X} {} bytes loop {} next {}]", i, b.buffer.address(), b.bytes_count, b.loop_count, b.next_buffer_index);
-    }
-    LOG_INFO("[NGSBUF] AT9 {} #{} voice={} type {} play {}: {} | buffer {} byte {} consumed {} bytes | chain{}", event,
-        count.fetch_add(1, std::memory_order_relaxed) + 1, fmt::ptr(data.parent), static_cast<int>(data.parent->rack->vdef->type),
-        data.parent->play_count, detail, state->current_buffer, state->current_byte_position_in_buffer, state->bytes_consumed_since_key_on, chain);
-}
-
 std::unique_ptr<ModuleLogicalState> Atrac9Module::create_logical_state() const {
     return std::make_unique<Atrac9LogicalState>();
 }
@@ -83,7 +69,6 @@ void Atrac9Module::on_state_change(const MemState &mem, ModuleData &data, const 
         logical->lead_in_pending = true;
         logical->samples_played = 0;
         logical->reached_data = false;
-        logical->first_data_wait_ticks = 0;
         {
             static std::atomic<uint64_t> keyons{ 0 };
             const uint64_t n = keyons.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -433,18 +418,13 @@ bool Atrac9Module::process(KernelState &kern, const MemState &mem, const SceUID 
     if (limit > 0)
         wanted = static_cast<uint32_t>(std::min<uint64_t>(wanted, static_cast<uint64_t>(limit) - std::min<uint64_t>(logical->samples_played, limit)));
 
-    static std::atomic<uint32_t> skips{ 0 }, waits{ 0 }, first_data{ 0 }, ends{ 0 };
     bool is_finished = false;
     // call decode more data until we either have an error or reached end of data
     while (logical->decoded_pcm.available_frames() < wanted) {
         const int32_t playable = first_buffer_with_data(params, state->current_buffer);
         if (playable == -1) {
-            if (!logical->reached_data) {
-                if (logical->first_data_wait_ticks++ == 0)
-                    log_buffer_event(waits, "waits for its first data", data, params, state, "nothing to play yet");
+            if (!logical->reached_data)
                 break;
-            }
-            log_buffer_event(ends, "ends on an empty chain", data, params, state, fmt::format("{} samples played", logical->samples_played));
             voice_lock.unlock();
             scheduler_lock.unlock();
             data.invoke_callback(kern, mem, thread_id, SCE_NGS_AT9_END_OF_DATA, 0, 0);
@@ -453,13 +433,8 @@ bool Atrac9Module::process(KernelState &kern, const MemState &mem, const SceUID 
             is_finished = true;
             break;
         }
-        if (logical->first_data_wait_ticks > 0) {
-            log_buffer_event(first_data, "got its first data", data, params, state, fmt::format("after {} ticks, at buffer {}", logical->first_data_wait_ticks, playable));
-            logical->first_data_wait_ticks = 0;
-        }
         logical->reached_data = true;
         if (playable != state->current_buffer) {
-            log_buffer_event(skips, "skips empty buffers", data, params, state, fmt::format("{} -> {}", state->current_buffer, playable));
             state->current_buffer = playable;
             state->current_byte_position_in_buffer = 0;
             logical->current_loop_count = 0;

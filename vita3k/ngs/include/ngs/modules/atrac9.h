@@ -99,7 +99,6 @@ struct Atrac9LogicalState : public ModuleLogicalState {
     uint32_t lead_in_samples_left = 0;
     uint64_t samples_played = 0;
     bool reached_data = false;
-    uint32_t first_data_wait_ticks = 0;
 };
 
 struct Atrac9RuntimeState : public ModuleRuntimeState {
