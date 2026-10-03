@@ -32,15 +32,15 @@ float distort(const SceNgsDistortionParams &p, const float x) {
     return p.fWetGain * limited + p.fDryGain * x;
 }
 
-const char *classify_distortion(const SceNgsDistortionParams &p) {
+bool distortion_applies(const SceNgsDistortionParams &p) {
     const float values[] = { p.fA, p.fB, p.fClip, p.fGate, p.fWetGain, p.fDryGain };
     for (const float value : values) {
         if (!std::isfinite(value))
-            return "IGNORED, not finite";
+            return false;
     }
     if (p.fA < 0.0f || p.fA > 10.0f || p.fB < 0.0f || p.fB > 10.0f || p.fClip < 0.0f || p.fClip > 1.0f
         || p.fGate < 0.0f || p.fGate > 1.0f || p.fWetGain < 0.0f || p.fWetGain > 16.0f || p.fDryGain < 0.0f || p.fDryGain > 16.0f)
-        return "IGNORED, out of range";
+        return false;
     bool silent = true;
     bool identity = true;
     for (const float x : { -0.9f, -0.5f, -0.1f, 0.1f, 0.5f, 0.9f }) {
@@ -48,11 +48,7 @@ const char *classify_distortion(const SceNgsDistortionParams &p) {
         silent = silent && std::fabs(y) < 1.0e-6f;
         identity = identity && std::fabs(y - x) < 1.0e-6f;
     }
-    if (silent)
-        return "IGNORED, would silence the voice";
-    if (identity)
-        return "identity";
-    return "applied";
+    return !silent && !identity;
 }
 } // namespace
 
@@ -65,14 +61,7 @@ bool DistortionModule::process(KernelState &kern, const MemState &mem, const Sce
     if (!logical->have_params || std::memcmp(&logical->last_params, params, sizeof(SceNgsDistortionParams)) != 0) {
         std::memcpy(&logical->last_params, params, sizeof(SceNgsDistortionParams));
         logical->have_params = true;
-        const char *use = classify_distortion(*params);
-        logical->active = std::strcmp(use, "applied") == 0;
-        uint64_t shape = 0xD157ull;
-        for (const float value : { params->fA, params->fB, params->fClip, params->fGate, params->fWetGain, params->fDryGain })
-            shape = combine_shape(shape, std::isfinite(value) ? static_cast<uint64_t>(static_cast<int64_t>(std::clamp(value, -1.0e6f, 1.0e6f) * 20.0f)) : 0xFFFFull);
-        log_effect_setting("distortion", data, shape,
-            fmt::format("A {:.2f} B {:.2f} limit {:.2f} gate {:.2f} wet {:.2f} dry {:.2f} - {}", params->fA, params->fB, params->fClip,
-                params->fGate, params->fWetGain, params->fDryGain, use));
+        logical->active = distortion_applies(*params);
     }
     if (!logical->active)
         return false;

@@ -19,7 +19,6 @@
 #include <util/log.h>
 
 #include <cstring>
-#include <string>
 
 namespace ngs {
 
@@ -49,31 +48,21 @@ bool EqualizerModule::process(KernelState &kern, const MemState &mem, const SceU
         logical->have_params = true;
         logical->active_bands = 0;
         bool silences = false;
-        uint64_t shape = combine_shape(0, coefficient_form ? 2 : 1);
-        std::string text;
         for (uint32_t band = 0; band < SCE_NGS_MAX_EQ_FILTERS; band++) {
-            text += fmt::format("{}band {}: ", band ? " | " : "", band);
             if (coefficient_form) {
                 const SceNgsParamCoEff &raw = reinterpret_cast<const SceNgsParamEqParamsCoEff *>(desc)->filterCoEff[band];
                 const BiquadUse use = classify_biquad(raw, logical->coefficients[band]);
                 if (use == BiquadUse::Apply)
                     logical->active_bands |= 1u << band;
                 silences = silences || use == BiquadUse::Silence;
-                shape = combine_shape(shape, biquad_shape(raw));
-                text += describe_biquad(raw) + " " + biquad_use_name(use);
             } else {
                 const SceNgsParamFilter &filter = reinterpret_cast<const SceNgsParamEqParams *>(desc)->filter[band];
                 if (design_biquad(filter, data.parent->rack->system->sample_rate, logical->coefficients[band]))
                     logical->active_bands |= 1u << band;
-                shape = combine_shape(shape, filter_band_shape(filter));
-                text += describe_filter_band(filter);
             }
         }
-        if (silences) {
+        if (silences)
             logical->active_bands = 0;
-            text += " - IGNORED, a band would silence the voice";
-        }
-        log_effect_setting("eq", data, shape, text);
     }
     if (!logical->active_bands) {
         logical->processed_last_tick = false;
@@ -98,7 +87,6 @@ bool EqualizerModule::process(KernelState &kern, const MemState &mem, const SceU
         if (!run_biquad(logical->coefficients[band], logical->history[band], output, output, granularity)) {
             logical->history = {};
             logical->processed_last_tick = false;
-            log_effect_setting("eq", data, 0xBADull, "output stopped being finite - passed through");
             return false;
         }
     }

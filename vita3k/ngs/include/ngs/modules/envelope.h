@@ -23,6 +23,10 @@
 
 #define SCE_NGS_ENVELOPE_MAX_POINTS 4
 
+#define SCE_NGS_ENVELOPE_NO_LOOP (-1)
+#define SCE_NGS_ENVELOPE_NO_LOOP_TERMINATE (-2)
+#define SCE_NGS_ENVELOPE_NO_LOOP_RELEASE (-3)
+
 enum SceNgsEnvelopeCurveType : uint32_t {
     SCE_NGS_ENVELOPE_LINEAR,
     SCE_NGS_ENVELOPE_CURVED
@@ -61,7 +65,6 @@ struct EnvelopeLogicalState : public ModuleLogicalState {
     float release_start_height = 0.0f;
     float release_height = 0.0f;
     double release_position_ms = 0.0;
-    double completed_at_zero_ms = 0.0;
 };
 
 struct EnvelopeModule : public Module {

@@ -41,7 +41,6 @@ void EnvelopeModule::on_param_change(const MemState &mem, ModuleData &data) {
     logical->total_position_ms = 0.0;
     logical->current_point = 0;
     logical->releasing = false;
-    logical->completed_at_zero_ms = 0.0;
 }
 
 void EnvelopeModule::on_key_on(const MemState &mem, ModuleData &data) {
@@ -101,19 +100,17 @@ bool EnvelopeModule::process(KernelState &kern, const MemState &mem, const SceUI
     };
 
     const bool keyed_off = voice->is_keyed_off || voice->state == VOICE_STATE_FINALIZING;
-    const float start_gain = logical->releasing || keyed_off
-        ? logical->release_height
-        : height_at_current();
-
-    // advance one tick
     if (!logical->releasing && keyed_off) {
+        const float from = height_at_current();
         logical->releasing = true;
-        logical->release_height = start_gain;
-        logical->release_start_height = start_gain;
+        logical->release_height = from;
+        logical->release_start_height = from;
         logical->release_position_ms = 0.0;
     }
+    const float start_gain = logical->releasing ? logical->release_height : height_at_current();
 
     float end_gain;
+    bool terminate = false;
     if (logical->releasing) {
         logical->release_position_ms += tick_ms;
         const double rel_ms = std::max<double>(params->uReleaseMsecs, 0.0);
@@ -139,6 +136,20 @@ bool EnvelopeModule::process(KernelState &kern, const MemState &mem, const SceUI
             }
         }
         end_gain = height_at_current();
+        if (logical->current_point >= point_count - 1) {
+            const bool timed = params->nLoopEnd == SCE_NGS_ENVELOPE_NO_LOOP_TERMINATE || params->nLoopEnd == SCE_NGS_ENVELOPE_NO_LOOP_RELEASE;
+            if (timed && logical->position_in_segment_ms >= static_cast<double>(params->envelopePoints[point_count - 1].uMsecsToNextPoint)) {
+                if (params->nLoopEnd == SCE_NGS_ENVELOPE_NO_LOOP_TERMINATE) {
+                    terminate = true;
+                } else {
+                    logical->releasing = true;
+                    logical->release_height = end_gain;
+                    logical->release_start_height = end_gain;
+                    logical->release_position_ms = 0.0;
+                    voice->rack->system->voice_scheduler.off(mem, voice);
+                }
+            }
+        }
     }
 
     // guest-visible states (games poll these to sequence fades)
@@ -161,42 +172,13 @@ bool EnvelopeModule::process(KernelState &kern, const MemState &mem, const SceUI
         }
     }
 
-    // Envelope-complete finish: on hardware a fade that ends at zero ENDS THE VOICE (finish callback ->
-    // the game reclaims it; AC3L clears its stream-table entry in that callback). We only applied the
-    // gain, so faded-out voices lived forever multiplying by zero - the entry leak behind the missing
-    // dialogue. Guards: only past the LAST point, final amplitude zero, and an earlier point was audible
-    // (a real fade-down) - pre-muted constant-zero envelopes, fade-ins and looping envelopes never match.
-    constexpr bool NGS_ENVELOPE_COMPLETE_FINISHES = true;
-    if (NGS_ENVELOPE_COMPLETE_FINISHES) {
-        if (logical->releasing) {
-            const double rel_ms = std::max<double>(params->uReleaseMsecs, 0.0);
-            if (logical->release_position_ms >= rel_ms) {
-                LOG_DEBUG("[NGSLIFE] ENVELOPE-RELEASE FINISH voice={} (release {}ms complete)", fmt::ptr(voice), rel_ms);
-                return true;
-            }
-        } else if (logical->current_point >= point_count - 1 && end_gain <= 0.0001f
-            && point_amplitude(params, point_count - 1) <= 0.0001f) {
-            bool had_audible_point = false;
-            for (int32_t i = 0; i < point_count - 1; i++)
-                had_audible_point |= point_amplitude(params, i) > 0.0001f;
-            const bool loop_active = params->nLoopEnd >= 0 && params->nLoopEnd < point_count;
-            if (had_audible_point && !loop_active) {
-                // Grace period before finishing: KZ re-triggers gun envelopes (param rewrite resets this
-                // accumulator) every ~150ms, so an instantly-finishing envelope killed active weapon voices.
-                // Only a fade left completed-at-zero and un-retriggered this long is truly abandoned (AC3L
-                // stop-fades sit here forever; their stream-table entries clear well inside the reload window).
-                constexpr double ENVELOPE_COMPLETE_FINISH_GRACE_MS = 5000.0;
-                logical->completed_at_zero_ms += tick_ms;
-                if (logical->completed_at_zero_ms >= ENVELOPE_COMPLETE_FINISH_GRACE_MS) {
-                    LOG_DEBUG("[NGSLIFE] ENVELOPE-COMPLETE FINISH voice={} ({} points, final=0, at zero {:.0f}ms) - abandoned fade, finishing voice",
-                        fmt::ptr(voice), point_count, logical->completed_at_zero_ms);
-                    return true;
-                }
-            }
-            if (had_audible_point && loop_active)
-                LOG_WARN_ONCE("[NGSLIFE] envelope at zero after audible fade but LOOPING (loop {}..{}) - finish suppressed, voice sustained",
-                    static_cast<int32_t>(params->uLoopStart), params->nLoopEnd);
-        }
+    if (terminate) {
+        voice->rack->system->voice_scheduler.stop(mem, voice);
+        return false;
+    }
+
+    if (logical->releasing && logical->release_position_ms >= std::max<double>(params->uReleaseMsecs, 0.0)) {
+        return true;
     }
 
     return false;

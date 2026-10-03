@@ -21,7 +21,6 @@
 
 #include <array>
 #include <cstdint>
-#include <string>
 
 #define SCE_NGS_FILTER_PARAMS_STRUCT_ID 0x01015CE4
 #define SCE_NGS_FILTER_PARAMS_COEFF_STRUCT_ID 0x02015CE4
@@ -97,17 +96,10 @@ enum class BiquadUse {
 bool design_biquad(const SceNgsParamFilter &band, int32_t sample_rate, BiquadCoefficients &coefficients);
 BiquadUse classify_biquad(const SceNgsParamCoEff &raw, BiquadCoefficients &coefficients);
 bool run_biquad(const BiquadCoefficients &c, StereoBiquadHistory &history, const float *input, float *output, int32_t frames);
-std::string describe_filter_band(const SceNgsParamFilter &band);
-std::string describe_biquad(const SceNgsParamCoEff &raw);
-uint64_t filter_band_shape(const SceNgsParamFilter &band);
-uint64_t biquad_shape(const SceNgsParamCoEff &raw);
-uint64_t combine_shape(uint64_t shape, uint64_t value);
-const char *biquad_use_name(BiquadUse use);
 
 int send_output_of(const ModuleData &data);
 float *main_signal_of(ModuleData &data);
 void share_main_signal(ModuleData &data);
-void log_effect_setting(const char *module, const ModuleData &data, uint64_t shape, const std::string &text);
 
 struct FilterLogicalState : public ModuleLogicalState {
     std::array<uint8_t, sizeof(SceNgsFilterParamsCoEff)> last_params{};

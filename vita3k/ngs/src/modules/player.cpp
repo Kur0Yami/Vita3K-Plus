@@ -53,6 +53,8 @@ void PlayerModule::on_state_change(const MemState &mem, ModuleData &data, const 
         logical->adpcm_buffer.clear();
         logical->requested_initial_buffer = false;
         logical->starved_ticks = 0;
+        logical->lead_in_pending = true;
+        logical->samples_played = 0;
 
         std::memset(&logical->adpcm_history, 0, sizeof(logical->adpcm_history));
     } else if (data.parent->is_keyed_off) {
@@ -177,9 +179,29 @@ bool PlayerModule::process(KernelState &kern, const MemState &mem, const SceUID 
 
     prefer_live_params_before_first_consume();
 
+    if (logical->lead_in_pending) {
+        logical->lead_in_pending = false;
+        logical->lead_in_samples_left = static_cast<uint32_t>(std::max<int32_t>(params->lead_in_samples, 0));
+        if (params->lead_in_samples > 0 || params->limit_number_of_samples_played > 0)
+            LOG_INFO_ONCE("NGS player: the game uses a lead-in ({} samples) or a sample limit ({} samples)", params->lead_in_samples, params->limit_number_of_samples_played);
+    }
+    if (logical->lead_in_samples_left >= static_cast<uint32_t>(granularity)) {
+        logical->lead_in_samples_left -= granularity;
+        data.ensure_scratch_size(static_cast<size_t>(granularity) * sizeof(float) * 2);
+        std::fill(data.scratch_data.begin(), data.scratch_data.end(), 0);
+        data.parent->products[0].data = data.scratch_data.data();
+        return false;
+    }
+    const uint32_t lead_in = logical->lead_in_samples_left;
+    logical->lead_in_samples_left = 0;
+    const int32_t limit = params->limit_number_of_samples_played;
+    uint32_t wanted = granularity - lead_in;
+    if (limit > 0)
+        wanted = static_cast<uint32_t>(std::min<uint64_t>(wanted, static_cast<uint64_t>(limit) - std::min<uint64_t>(logical->samples_played, limit)));
+
     constexpr int8_t max_starved_ticks = 16;
 
-    while (static_cast<int>(logical->decoded_pcm.available_frames()) < granularity) {
+    while (logical->decoded_pcm.available_frames() < wanted) {
         state->current_buffer = valid_buffer_index(state->current_buffer);
         if ((state->current_buffer == -1)
             || !params->buffer_params[state->current_buffer].buffer
@@ -396,22 +418,32 @@ bool PlayerModule::process(KernelState &kern, const MemState &mem, const SceUID 
     }
 
     const uint32_t available_samples = logical->decoded_pcm.available_frames();
-    const uint32_t samples_to_be_passed = std::min<uint32_t>(available_samples, granularity);
+    const uint32_t samples_to_be_passed = std::min<uint32_t>(available_samples, wanted);
 
-    if (available_samples >= static_cast<uint32_t>(granularity)) {
+    if (lead_in == 0 && samples_to_be_passed == static_cast<uint32_t>(granularity)) {
         data.parent->products[0].data = logical->decoded_pcm.read_bytes();
     } else {
         data.ensure_scratch_size(static_cast<size_t>(granularity) * sizeof(float) * 2);
         std::fill(data.scratch_data.begin(), data.scratch_data.end(), 0);
-        if (available_samples > 0) {
-            std::memcpy(data.scratch_data.data(), logical->decoded_pcm.read_bytes(), static_cast<size_t>(available_samples) * sizeof(float) * 2);
+        if (samples_to_be_passed > 0) {
+            std::memcpy(data.scratch_data.data() + static_cast<size_t>(lead_in) * sizeof(float) * 2, logical->decoded_pcm.read_bytes(), static_cast<size_t>(samples_to_be_passed) * sizeof(float) * 2);
         }
         data.parent->products[0].data = data.scratch_data.data();
     }
 
     logical->decoded_pcm.consume_frames(samples_to_be_passed);
+    logical->samples_played += samples_to_be_passed;
     state->samples_generated_since_key_on += samples_to_be_passed * params->channels;
     state->samples_generated_total += samples_to_be_passed * params->channels;
+
+    if (!finished && limit > 0 && logical->samples_played >= static_cast<uint64_t>(limit)) {
+        voice_lock.unlock();
+        scheduler_lock.unlock();
+        data.invoke_callback(kern, mem, thread_id, SCE_NGS_PLAYER_END_OF_DATA, 0, 0);
+        scheduler_lock.lock();
+        voice_lock.lock();
+        finished = true;
+    }
 
     return finished;
 }

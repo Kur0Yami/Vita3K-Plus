@@ -21,53 +21,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <functional>
-#include <mutex>
-#include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 
 namespace ngs {
 
 namespace {
 constexpr float pi = 3.14159265358979323846f;
-constexpr uint32_t max_logged_settings_per_module = 64;
-
-std::mutex effect_log_mutex;
-std::unordered_set<uint64_t> effect_logged;
-std::unordered_map<std::string, uint32_t> effect_log_counts;
 
 float sanitised(const float value, const float lo, const float hi, const float fallback) {
     return std::isfinite(value) ? std::clamp(value, lo, hi) : fallback;
-}
-
-int64_t quantised(const float value, const float scale) {
-    if (!std::isfinite(value))
-        return INT64_MIN;
-    return static_cast<int64_t>(std::clamp(value * scale, -1.0e9f, 1.0e9f));
-}
-
-const char *filter_mode_name(const uint32_t mode) {
-    static const char *const names[] = { "OFF", "LOWPASS_RESONANT", "HIGHPASS_RESONANT", "BANDPASS_PEAK", "BANDPASS_ZERO", "NOTCH", "PEAK",
-        "HIGHSHELF", "LOWSHELF", "LOWPASS_ONEPOLE", "HIGHPASS_ONEPOLE", "ALLPASS", "LOWPASS_RESONANT_NORMALIZED" };
-    return mode < sizeof(names) / sizeof(names[0]) ? names[mode] : "UNKNOWN MODE";
-}
-
-const char *voice_kind(const ModuleData &data) {
-    const VoiceDefinition *definition = (data.parent && data.parent->rack) ? data.parent->rack->vdef : nullptr;
-    if (!definition)
-        return "unknown voice";
-    switch (definition->type) {
-    case BussType::BUSS_SCREAM: return "SCREAM voice";
-    case BussType::BUSS_SCREAM_ATRAC9: return "SCREAM ATRAC9 voice";
-    case BussType::BUSS_SIMPLE: return "simple voice";
-    case BussType::BUSS_SIMPLE_ATRAC9: return "simple ATRAC9 voice";
-    case BussType::BUSS_ATRAC9: return "ATRAC9 voice";
-    case BussType::BUSS_NORMAL_PLAYER: return "template 1 voice";
-    case BussType::BUSS_EQUALIZATION: return "EQ buss";
-    case BussType::BUSS_DISTORTION: return "distortion buss";
-    default: return "other voice";
-    }
 }
 } // namespace
 
@@ -237,45 +198,6 @@ bool run_biquad(const BiquadCoefficients &c, StereoBiquadHistory &history, const
     return true;
 }
 
-std::string describe_filter_band(const SceNgsParamFilter &band) {
-    return fmt::format("{} {:.0f} Hz Q {:.2f} gain {:.1f} dB", filter_mode_name(band.eFilterMode), band.fFrequency, band.fResonance, band.fGain);
-}
-
-std::string describe_biquad(const SceNgsParamCoEff &raw) {
-    return fmt::format("b0 {:.5f} b1 {:.5f} b2 {:.5f} a1 {:.5f} a2 {:.5f}", raw.fB0, raw.fB1, raw.fB2, raw.fA1, raw.fA2);
-}
-
-uint64_t combine_shape(uint64_t shape, const uint64_t value) {
-    shape ^= value + 0x9E3779B97F4A7C15ull + (shape << 6) + (shape >> 2);
-    return shape;
-}
-
-uint64_t filter_band_shape(const SceNgsParamFilter &band) {
-    uint64_t shape = combine_shape(0, band.eFilterMode);
-    if (band.eFilterMode == SCE_NGS_FILTER_MODE_OFF)
-        return shape;
-    // a third of an octave, a tenth of Q and one dB count as the same setting for the log
-    shape = combine_shape(shape, static_cast<uint64_t>(quantised(band.fFrequency > 0.0f ? std::log2(band.fFrequency) : -1.0f, 3.0f)));
-    shape = combine_shape(shape, static_cast<uint64_t>(quantised(band.fResonance, 10.0f)));
-    return combine_shape(shape, static_cast<uint64_t>(quantised(band.fGain, 1.0f)));
-}
-
-uint64_t biquad_shape(const SceNgsParamCoEff &raw) {
-    uint64_t shape = 0xC0EFull;
-    for (const float value : { raw.fB0, raw.fB1, raw.fB2, raw.fA1, raw.fA2 })
-        shape = combine_shape(shape, static_cast<uint64_t>(quantised(value, 100.0f)));
-    return shape;
-}
-
-const char *biquad_use_name(const BiquadUse use) {
-    switch (use) {
-    case BiquadUse::Apply: return "applied";
-    case BiquadUse::Identity: return "identity";
-    case BiquadUse::Silence: return "IGNORED, would silence the voice";
-    default: return "IGNORED, unstable or not finite";
-    }
-}
-
 int send_output_of(const ModuleData &data) {
     const VoiceDefinition *definition = (data.parent && data.parent->rack) ? data.parent->rack->vdef : nullptr;
     if (!definition)
@@ -314,23 +236,6 @@ void share_main_signal(ModuleData &data) {
     }
 }
 
-void log_effect_setting(const char *module, const ModuleData &data, const uint64_t shape, const std::string &text) {
-    const VoiceDefinition *definition = (data.parent && data.parent->rack) ? data.parent->rack->vdef : nullptr;
-    uint64_t key = combine_shape(std::hash<std::string_view>{}(module), shape);
-    key = combine_shape(key, definition ? static_cast<uint64_t>(definition->type) : 0xFF);
-    key = combine_shape(key, data.index);
-    const std::lock_guard<std::mutex> lock(effect_log_mutex);
-    if (!effect_logged.insert(key).second)
-        return;
-    uint32_t &count = effect_log_counts[module];
-    if (count >= max_logged_settings_per_module)
-        return;
-    count++;
-    const int send = send_output_of(data);
-    LOG_INFO("[NGSFX] {} in {} slot {} ({}): {}", module, voice_kind(data), data.index,
-        send >= 0 ? fmt::format("send to output {}", send) : std::string("main chain"), text);
-}
-
 void FilterModule::on_state_change(const MemState &mem, ModuleData &data, const VoiceState previous) {
     if (data.parent->state == VOICE_STATE_ACTIVE && previous == VOICE_STATE_AVAILABLE) {
         FilterLogicalState *logical = data.get_logical_state<FilterLogicalState>();
@@ -357,13 +262,10 @@ bool FilterModule::process(KernelState &kern, const MemState &mem, const SceUID 
         logical->have_params = true;
         if (coefficient_form) {
             const SceNgsParamCoEff &raw = reinterpret_cast<const SceNgsFilterParamsCoEff *>(desc)->params;
-            const BiquadUse use = classify_biquad(raw, logical->coefficients);
-            logical->active = use == BiquadUse::Apply;
-            log_effect_setting("filter", data, biquad_shape(raw), describe_biquad(raw) + " - " + biquad_use_name(use));
+            logical->active = classify_biquad(raw, logical->coefficients) == BiquadUse::Apply;
         } else {
             const SceNgsParamFilter &band = reinterpret_cast<const SceNgsFilterParams *>(desc)->params;
             logical->active = design_biquad(band, data.parent->rack->system->sample_rate, logical->coefficients);
-            log_effect_setting("filter", data, filter_band_shape(band), describe_filter_band(band));
         }
     }
     if (!logical->active) {
@@ -385,7 +287,6 @@ bool FilterModule::process(KernelState &kern, const MemState &mem, const SceUID 
     if (!run_biquad(logical->coefficients, logical->history, input, output, granularity)) {
         logical->history = {};
         logical->processed_last_tick = false;
-        log_effect_setting("filter", data, 0xBADull, "output stopped being finite - passed through");
         return false;
     }
     logical->processed_last_tick = true;
