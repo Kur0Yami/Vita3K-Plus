@@ -213,6 +213,7 @@ private:
     // a sampled texture leaves real data in its destination therefore a later partial vpck must preserve it
     bool m_store_from_texture_sample{ false };
     bool m_store_is_raw_move{ false };
+    bool m_store_raw_f16_lanes{ false };
     // the data type each register word (bank << 24 | word) was last stored with
     std::map<uint32_t, DataType> m_word_store_types;
     DataType m_raw_move_types[4]{};

@@ -1330,7 +1330,7 @@ spv::Id unpack(spv::Builder &b, SpirvUtilFunctions &utils, const FeatureState &f
 }
 
 void store(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFunctions &utils, const FeatureState &features, Operand dest,
-    spv::Id source, std::uint8_t dest_mask, int off, bool raw_move, bool raw_move_keeps_declared) {
+    spv::Id source, std::uint8_t dest_mask, int off, bool raw_move, bool raw_move_keeps_declared, bool raw_f16_lanes) {
     if (source == spv::NoResult) {
         LOG_WARN("Source invalid");
         return;
@@ -1339,6 +1339,9 @@ void store(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFuncti
     // Which layout the colour output holds is decided by the program's last write to it and a raw move keeps its source words
     if (params.frag_output_holds_declared_type != 0 && dest.bank == RegisterBank::OUTPUT)
         b.createStore(b.makeBoolConstant(raw_move ? raw_move_keeps_declared : is_float_data_type(dest.type)), params.frag_output_holds_declared_type);
+
+    if (raw_f16_lanes)
+        dest.type = DataType::UINT16;
 
     // Check for INDEX bank. INDEX bank are optimized to store an integer
     if (dest.bank == RegisterBank::INDEX || dest.bank == RegisterBank::PREDICATE) {
@@ -1442,7 +1445,7 @@ void store(spv::Builder &b, const SpirvShaderParameters &params, SpirvUtilFuncti
         spv::Id vec_comp_type = utils::unwrap_type(b, b.getTypeId(source));
         int source_value_taken_count = 0;
         int last_swizz_on = 4;
-        if (dest.type == DataType::F16) {
+        if (dest.type == DataType::F16 || raw_f16_lanes) {
             if (!dest_mask)
                 return;
             while (!(dest_mask & (1 << (last_swizz_on - 1))))

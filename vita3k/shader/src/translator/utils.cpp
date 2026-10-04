@@ -59,7 +59,7 @@ void USSETranslatorVisitor::store(Operand dest, spv::Id source, std::uint8_t des
         else
             m_word_store_types[key] = stored_type;
     }
-    utils::store(m_b, m_spirv_params, m_util_funcs, m_features, dest, source, dest_mask, shift_offset, m_store_is_raw_move, m_raw_move_keeps_declared);
+    utils::store(m_b, m_spirv_params, m_util_funcs, m_features, dest, source, dest_mask, shift_offset, m_store_is_raw_move, m_raw_move_keeps_declared, m_store_raw_f16_lanes);
 }
 
 spv::Id USSETranslatorVisitor::swizzle_to_spv_comp(spv::Id composite, spv::Id type, SwizzleChannel swizzle) {
