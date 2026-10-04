@@ -100,6 +100,7 @@ struct State {
     bool fullscreen = false;
 
     Context *context;
+    std::vector<Context *> live_contexts;
 
     GXPPtrMap gxp_ptr_map;
     Queue<CommandList> command_buffer_queue;

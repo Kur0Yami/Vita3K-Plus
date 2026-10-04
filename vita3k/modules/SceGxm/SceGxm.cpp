@@ -17,6 +17,7 @@
 
 #include "SceGxm.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cpu/functions.h>
@@ -1325,7 +1326,12 @@ static int destroy_gxm_context(EmuEnvState &emuenv, SceGxmContext *context, cons
     }
 
     if (context->state.type == SCE_GXM_CONTEXT_TYPE_IMMEDIATE) {
-        if (emuenv.gxm.immediate_context != context_addr) {
+        const auto immediate_context = emuenv.gxm.immediate_contexts.find(context);
+        if (immediate_context == emuenv.gxm.immediate_contexts.end()) {
+            return static_cast<int>(SCE_GXM_ERROR_INVALID_POINTER);
+        }
+
+        if (context_addr != 0 && immediate_context->second != context_addr) {
             return static_cast<int>(SCE_GXM_ERROR_INVALID_POINTER);
         }
 
@@ -1341,7 +1347,10 @@ static int destroy_gxm_context(EmuEnvState &emuenv, SceGxmContext *context, cons
             renderer::destroy_context(*emuenv.renderer, context->renderer);
         }
 
-        emuenv.gxm.immediate_context = 0;
+        if (emuenv.gxm.last_immediate_context == immediate_context->second) {
+            emuenv.gxm.last_immediate_context = 0;
+        }
+        emuenv.gxm.immediate_contexts.erase(immediate_context);
     } else if (context->state.type == SCE_GXM_CONTEXT_TYPE_DEFERRED) {
         const auto deferred_context = emuenv.gxm.deferred_contexts.find(context);
         if (deferred_context == emuenv.gxm.deferred_contexts.end()) {
@@ -1377,8 +1386,10 @@ static int destroy_gxm_context(EmuEnvState &emuenv, Ptr<SceGxmContext> context_p
 namespace gxm {
 
 void destroy_all_contexts(EmuEnvState &emuenv, const bool force_backend_destroy) {
-    if (emuenv.gxm.immediate_context != 0) {
-        const int result = destroy_gxm_context(emuenv, Ptr<SceGxmContext>(emuenv.gxm.immediate_context), force_backend_destroy);
+    for (auto immediate_context = emuenv.gxm.immediate_contexts.begin(); immediate_context != emuenv.gxm.immediate_contexts.end();) {
+        const auto current_context = immediate_context++;
+        const auto [context, context_addr] = *current_context;
+        const int result = destroy_gxm_context(emuenv, context, context_addr, force_backend_destroy);
         if (result < 0) {
             LOG_WARN("Failed to destroy immediate GXM context during cleanup: {}", log_hex(result));
         }
@@ -2107,10 +2118,6 @@ EXPORT(int, sceGxmCreateContext, const SceGxmContextParams *params, Ptr<SceGxmCo
     if (!params || !context)
         return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
 
-    if (emuenv.gxm.immediate_context != 0) {
-        return RET_ERROR(SCE_GXM_ERROR_ALREADY_INITIALIZED);
-    }
-
     if (params->hostMemSize < sizeof(SceGxmContext)) {
         return RET_ERROR(SCE_GXM_ERROR_INVALID_VALUE);
     }
@@ -2163,7 +2170,9 @@ EXPORT(int, sceGxmCreateContext, const SceGxmContextParams *params, Ptr<SceGxmCo
             static_cast<int64_t>(ctx->command_next_free_pos) - static_cast<int64_t>(last_free) + static_cast<int64_t>(size) - 1);
     };
 
-    emuenv.gxm.immediate_context = context->address();
+    emuenv.gxm.immediate_contexts.emplace(ctx, context->address());
+    if (emuenv.gxm.last_immediate_context == 0)
+        emuenv.gxm.last_immediate_context = context->address();
     return 0;
 }
 
@@ -2440,8 +2449,13 @@ EXPORT(int, sceGxmDisplayQueueAddEntry, Ptr<SceGxmSyncObject> oldBuffer, Ptr<Sce
 
     // TODO: I do this because the sync function does not have access to the display state, but this is not great
     renderer::Context *active_renderer_context = nullptr;
-    if (emuenv.gxm.immediate_context != 0)
-        active_renderer_context = Ptr<SceGxmContext>(emuenv.gxm.immediate_context).get(emuenv.mem)->renderer.get();
+    if (emuenv.gxm.last_immediate_context != 0) {
+        const auto immediate_context = std::ranges::find_if(emuenv.gxm.immediate_contexts, [&](const auto &entry) {
+            return entry.second == emuenv.gxm.last_immediate_context;
+        });
+        if (immediate_context != emuenv.gxm.immediate_contexts.end())
+            active_renderer_context = immediate_context->first->renderer.get();
+    }
 
     renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::NewFrame, false, frame, &emuenv.display, active_renderer_context);
 
@@ -2870,6 +2884,10 @@ EXPORT(int, sceGxmEndScene, SceGxmContext *context, SceGxmNotification *vertexNo
     // Submit our command list
     renderer::submit_command_list(*emuenv.renderer, context->renderer.get(), context->renderer->command_list);
     renderer::reset_command_list(context->renderer->command_list);
+
+    const auto immediate_context = emuenv.gxm.immediate_contexts.find(context);
+    if (immediate_context != emuenv.gxm.immediate_contexts.end())
+        emuenv.gxm.last_immediate_context = immediate_context->second;
 
     context->state.active = false;
     return 0;

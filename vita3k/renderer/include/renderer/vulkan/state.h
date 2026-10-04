@@ -137,6 +137,7 @@ struct VKState : public renderer::State {
 
     // queue where we put requests that need to wait for the GPU
     Queue<WaitThreadRequest> request_queue;
+    std::thread gpu_request_wait_thread;
 
     vkutil::Image default_image;
     vkutil::Image default_raw_image;
@@ -198,6 +199,9 @@ struct VKState : public renderer::State {
     void precompile_shader(const ShadersHash &hash) override;
     void preclose_action() override;
     void wait_gpu_idle() override;
+    void start_gpu_request_wait_thread(const MemState &mem);
+    void stop_gpu_request_wait_thread();
+    void wait_thread_function(const MemState &mem);
     uint32_t diag_pipelines_created() const override { return pipeline_cache.pipelines_created.load(std::memory_order_relaxed); }
 
     // dumps the resolved device/driver/feature configuration to the log, once, from late_init

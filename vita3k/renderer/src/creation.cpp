@@ -79,6 +79,7 @@ COMMAND(handle_create_context) {
     }
 
     renderer.context = ctx->get();
+    renderer.live_contexts.push_back(ctx->get());
 
     // fill with default values
     renderer.context->shader_hints = {
@@ -95,8 +96,10 @@ COMMAND(handle_destroy_context) {
     TRACY_FUNC_COMMANDS(handle_destroy_context);
     std::unique_ptr<Context> *ctx = helper.pop<std::unique_ptr<Context> *>();
 
+    std::erase(renderer.live_contexts, ctx->get());
+    if (renderer.context == ctx->get())
+        renderer.context = renderer.live_contexts.empty() ? nullptr : renderer.live_contexts.back();
     ctx->reset();
-    renderer.context = nullptr;
 
     complete_command(renderer, helper, 0);
 }

@@ -1249,7 +1249,7 @@ void VKState::cleanup() {
 
     wait_gpu_idle();
 
-    request_queue.abort();
+    stop_gpu_request_wait_thread();
 
     context = nullptr;
 
@@ -2369,8 +2369,7 @@ void VKState::precompile_shader(const ShadersHash &hash) {
 
 void VKState::preclose_action() {
     // Stop the GPU request wait thread before destruction begins.
-    // VKState (owns the queue) is destroyed before VKContext (owns the thread).
-    request_queue.abort();
+    stop_gpu_request_wait_thread();
 
     // make sure we are in a game
     if (shaders_path.empty())

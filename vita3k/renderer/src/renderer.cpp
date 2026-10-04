@@ -438,8 +438,9 @@ void destroy_context_during_shutdown(State &state, std::unique_ptr<Context> &con
         state.set_current();
     }
 
+    std::erase(state.live_contexts, context.get());
     if (state.context == context.get()) {
-        state.context = nullptr;
+        state.context = state.live_contexts.empty() ? nullptr : state.live_contexts.back();
     }
 
     context.reset();

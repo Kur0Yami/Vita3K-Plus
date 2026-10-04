@@ -33,7 +33,19 @@
 
 namespace renderer::vulkan {
 
-void VKContext::wait_thread_function(const MemState &mem) {
+void VKState::start_gpu_request_wait_thread(const MemState &mem) {
+    if (!gpu_request_wait_thread.joinable())
+        gpu_request_wait_thread = std::thread(&VKState::wait_thread_function, this, std::cref(mem));
+}
+
+void VKState::stop_gpu_request_wait_thread() {
+    request_queue.abort();
+    if (gpu_request_wait_thread.joinable())
+        gpu_request_wait_thread.join();
+}
+
+void VKState::wait_thread_function(const MemState &mem) {
+    VKState &state = *this;
     // try to wait for multiple fences at the same time if possible
     std::vector<vk::Fence> fences;
 
@@ -122,10 +134,10 @@ void VKContext::wait_thread_function(const MemState &mem) {
 
                            // don't reset them, the reset will be done in the new_frame function
                            // and these fences can still be waited for during texture uploading
-                           std::unique_lock<std::mutex> lock(new_frame_mutex);
-                           last_frame_waited = request.frame_timestamp;
+                           std::unique_lock<std::mutex> lock(request.context->new_frame_mutex);
+                           request.context->last_frame_waited = request.frame_timestamp;
                            lock.unlock();
-                           new_frame_condv.notify_one();
+                           request.context->new_frame_condv.notify_one();
                        },
                        [&](BufferSyncRequest &request) {
                            stat_buffer_syncs++;
@@ -947,7 +959,7 @@ void VKContext::check_for_macroblock_change(bool is_draw) {
 
 void new_frame(VKContext &context) {
     if (context.state.features.enable_memory_mapping) {
-        FrameDoneRequest request = { context.frame_timestamp };
+        FrameDoneRequest request = { context.frame_timestamp, &context };
         context.state.request_queue.push(request);
 
         context.state.surface_cache.clear_surfaces_changed();

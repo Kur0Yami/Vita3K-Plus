@@ -200,8 +200,11 @@ struct NotificationRequest {
     SceGxmNotification notifications[2];
 };
 
+struct VKContext;
+
 struct FrameDoneRequest {
     uint64_t frame_timestamp;
+    VKContext *context;
 };
 
 struct SyncSignalRequest {
@@ -402,7 +405,6 @@ struct VKContext : public renderer::Context {
     // only used if memory mapping is enabled
     std::mutex new_frame_mutex;
     std::condition_variable new_frame_condv;
-    std::thread gpu_request_wait_thread;
     uint64_t last_frame_waited = 0;
 
     explicit VKContext(VKState &state, MemState &mem);
@@ -422,9 +424,6 @@ struct VKContext : public renderer::Context {
 
     void note_half_pixel_origin(int32_t x0, int32_t y0, int32_t x1, int32_t y1);
     void fill_half_pixel_strips();
-
-private:
-    void wait_thread_function(const MemState &mem);
 };
 
 struct VKRenderTarget : public renderer::RenderTarget {

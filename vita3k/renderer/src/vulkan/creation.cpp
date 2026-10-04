@@ -26,6 +26,8 @@
 
 #include <vkutil/vkutil.h>
 
+#include <future>
+
 namespace renderer::vulkan {
 
 VKContext::VKContext(VKState &state, MemState &mem)
@@ -58,7 +60,7 @@ VKContext::VKContext(VKState &state, MemState &mem)
         std::fill_n(vertex_stream_buffers, SCE_GXM_MAX_VERTEX_STREAMS, state.default_buffer.buffer);
 
         // also initialize the gpu wait thread
-        gpu_request_wait_thread = std::thread(&VKContext::wait_thread_function, this, std::ref(mem));
+        state.start_gpu_request_wait_thread(mem);
     } else {
         // these are not needed when using memory mapping
         vertex_stream_ring_buffer.create();
@@ -150,8 +152,15 @@ VKContext::VKContext(VKState &state, MemState &mem)
 }
 
 VKContext::~VKContext() {
-    if (gpu_request_wait_thread.joinable())
-        gpu_request_wait_thread.join();
+    if (state.features.enable_memory_mapping && state.gpu_request_wait_thread.joinable() && !state.request_queue.is_aborted()) {
+        auto promise = std::make_shared<std::promise<void>>();
+        std::future<void> future = promise->get_future();
+        state.request_queue.push(CallbackRequest{ new CallbackRequestFunction([promise]() { promise->set_value(); }) });
+        while (future.wait_for(std::chrono::milliseconds(5)) != std::future_status::ready) {
+            if (state.request_queue.is_aborted())
+                break;
+        }
+    }
 
     for (auto &[addr, vb] : visibility_buffers)
         state.device.destroy(vb.query_pool);

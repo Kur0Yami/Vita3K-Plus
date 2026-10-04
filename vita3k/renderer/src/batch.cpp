@@ -106,6 +106,9 @@ static void process_batch(renderer::State &state, const FeatureState &features, 
         { CommandOpcode::DestroyContext, cmd_handle_destroy_context }
     };
 
+    if (command_list.context)
+        state.context = command_list.context;
+
     Command *cmd = command_list.first;
     uint32_t executed_in_list = 0;
 
