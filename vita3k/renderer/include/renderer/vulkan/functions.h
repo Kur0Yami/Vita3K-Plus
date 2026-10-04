@@ -32,8 +32,7 @@ void destroy(VKState &state, std::unique_ptr<RenderTarget> &rt);
 bool create(std::unique_ptr<VertexProgram> &vp, VKState &state, const SceGxmProgram &program);
 bool create(std::unique_ptr<FragmentProgram> &fp, VKState &state, const SceGxmProgram &program, const SceGxmBlendInfo *blend);
 
-void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format,
-    Ptr<void> indices, size_t count, uint32_t instance_count, MemState &mem, const Config &config);
+void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format, Ptr<void> indices, size_t count, uint32_t instance_count, uint64_t index_snapshot, MemState &mem, const Config &config);
 
 void mid_scene_flush(VKContext &context, const SceGxmNotification notification);
 void new_frame(VKContext &context);

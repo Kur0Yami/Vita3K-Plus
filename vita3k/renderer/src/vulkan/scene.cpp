@@ -393,7 +393,7 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
 }
 
 void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format,
-    Ptr<void> indices, size_t count, uint32_t instance_count, MemState &mem, const Config &config) {
+    Ptr<void> indices, size_t count, uint32_t instance_count, uint64_t index_snapshot, MemState &mem, const Config &config) {
     // the mask bit is not emulated here, so a mask-update program would just paint writing_mask over the whole target (gl/draw.cpp skips these too)
     if (!context.state.features.use_mask_bit && context.record.fragment_program_binding->is_maskupdate)
         return;
@@ -662,7 +662,25 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
     const size_t index_size = (format == SCE_GXM_INDEX_FORMAT_U16) ? 2 : 4;
 
     uint32_t max_index = 0;
-    if (use_memory_mapping) {
+    const uint32_t index_bytes = static_cast<uint32_t>(index_size * count);
+    // the game may already have reused its index memory so prefer the copy taken when the scene was kicked
+    const uint8_t *index_copy = use_memory_mapping ? renderer::stream_snapshot_get(index_snapshot, index_bytes) : nullptr;
+    if (index_copy) {
+        if (context.state.mapping_method == MappingMethod::DoubleBuffer) {
+            if (format == SCE_GXM_INDEX_FORMAT_U16) {
+                const uint16_t *data = reinterpret_cast<const uint16_t *>(index_copy);
+                max_index = *std::max_element(&data[0], &data[count]);
+            } else {
+                const uint32_t *data = reinterpret_cast<const uint32_t *>(index_copy);
+                max_index = *std::max_element(&data[0], &data[count]);
+            }
+        }
+        if (!context.vertex_stream_ring_buffer.handle())
+            context.vertex_stream_ring_buffer.create();
+        context.vertex_ring_make_room(index_bytes);
+        context.vertex_stream_ring_buffer.allocate(context.prerender_cmd, index_bytes, index_copy);
+        context.render_cmd.bindIndexBuffer(context.vertex_stream_ring_buffer.handle(), context.vertex_stream_ring_buffer.data_offset, index_type);
+    } else if (use_memory_mapping) {
         auto [buffer, offset] = context.state.get_matching_mapping(indices);
         if (context.state.mapping_method == MappingMethod::DoubleBuffer) {
             TrappedBuffer *trapped_buffer = context.state.buffer_trapping.access_buffer(indices.address(), count * index_size, mem);

@@ -268,6 +268,7 @@ void set_context(State &state, Context *ctx, RenderTarget *target, SceGxmColorSu
 
 namespace {
 constexpr bool GUEST_STREAM_SNAPSHOT = true;
+constexpr bool GUEST_INDEX_SNAPSHOT = true;
 constexpr size_t SNAP_RING_SIZE = 64u * 1024u * 1024u;
 // only a small stream is copied (every stream a game has been seen to recycle is a small per-draw block)
 // a game that indexes deep into a large shared buffer which would overlap the ring every frame
@@ -320,7 +321,7 @@ uint64_t snap_copy_locked(MemState &mem, const uint32_t addr, const uint32_t siz
 } // namespace
 
 void stream_snapshot_kick(MemState &mem, CommandList &list) {
-    if (!GUEST_STREAM_SNAPSHOT || g_snap_disabled.load(std::memory_order_relaxed) || !list.first)
+    if ((!GUEST_STREAM_SNAPSHOT && !GUEST_INDEX_SNAPSHOT) || g_snap_disabled.load(std::memory_order_relaxed) || !list.first)
         return;
 
     Command *from = list.first;
@@ -333,7 +334,21 @@ void stream_snapshot_kick(MemState &mem, CommandList &list) {
     if (g_snap_disabled.load(std::memory_order_relaxed))
         return;
     for (Command *cmd = from; cmd; cmd = cmd == list.last ? nullptr : cmd->next) {
-        if (cmd->opcode != CommandOpcode::SetState)
+        if (cmd->opcode == CommandOpcode::Draw) {
+            if (!GUEST_INDEX_SNAPSHOT)
+                continue;
+            CommandHelper helper(cmd);
+            helper.pop<SceGxmPrimitiveType>();
+            const SceGxmIndexFormat format = helper.pop<SceGxmIndexFormat>();
+            const Ptr<const void> indices = helper.pop<Ptr<const void>>();
+            const uint32_t count = helper.pop<uint32_t>();
+            helper.pop<uint32_t>();
+            const uint64_t length = static_cast<uint64_t>(count) * (format == SCE_GXM_INDEX_FORMAT_U16 ? 2 : 4);
+            uint64_t handle = length <= SNAP_MAX_BYTES ? snap_copy_locked(mem, indices.address(), static_cast<uint32_t>(length)) : ~0ull;
+            helper.push(handle);
+            continue;
+        }
+        if (!GUEST_STREAM_SNAPSHOT || cmd->opcode != CommandOpcode::SetState)
             continue;
         CommandHelper helper(cmd);
         if (helper.pop<GXMState>() != GXMState::VertexStream)
@@ -347,7 +362,7 @@ void stream_snapshot_kick(MemState &mem, CommandList &list) {
 }
 
 const uint8_t *stream_snapshot_get(const uint64_t handle, const uint32_t size) {
-    if (!GUEST_STREAM_SNAPSHOT || handle == ~0ull || !size)
+    if ((!GUEST_STREAM_SNAPSHOT && !GUEST_INDEX_SNAPSHOT) || handle == ~0ull || !size)
         return nullptr;
 
     const std::lock_guard<std::mutex> lock(g_snap_mutex);
@@ -400,7 +415,7 @@ void set_vertex_stream(State &state, Context *ctx, const std::size_t index, cons
 }
 
 void draw(State &state, Context *ctx, SceGxmPrimitiveType prim_type, SceGxmIndexFormat index_type, Ptr<const void> index_data, const std::uint32_t index_count, const std::uint32_t instance_count) {
-    renderer::add_command(ctx, renderer::CommandOpcode::Draw, nullptr, prim_type, index_type, index_data, index_count, instance_count);
+    renderer::add_command(ctx, renderer::CommandOpcode::Draw, nullptr, prim_type, index_type, index_data, index_count, instance_count, static_cast<uint64_t>(~0ull));
 }
 
 void transfer_copy(State &state, uint32_t colorKeyValue, uint32_t colorKeyMask, SceGxmTransferColorKeyMode colorKeyMode, const SceGxmTransferImage *images, SceGxmTransferType srcType, SceGxmTransferType destType) {

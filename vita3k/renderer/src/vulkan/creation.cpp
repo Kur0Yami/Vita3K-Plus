@@ -33,7 +33,7 @@ namespace renderer::vulkan {
 VKContext::VKContext(VKState &state, MemState &mem)
     : state(state)
     , mem(mem)
-    , vertex_stream_ring_buffer(vk::BufferUsageFlagBits::eVertexBuffer, MiB(/*128*/ 64))
+    , vertex_stream_ring_buffer(vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer, MiB(/*128*/ 64))
     , index_stream_ring_buffer(vk::BufferUsageFlagBits::eIndexBuffer, MiB(64))
     , vertex_uniform_stream_ring_buffer(vk::BufferUsageFlagBits::eStorageBuffer, MiB(/*256*/ 64))
     , fragment_uniform_stream_ring_buffer(vk::BufferUsageFlagBits::eStorageBuffer, MiB(/*256*/ 64))
