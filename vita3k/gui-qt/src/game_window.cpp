@@ -267,7 +267,7 @@ int GameWindow::drawable_width() const {
     if (GetClientRect(reinterpret_cast<HWND>(winId()), &rect))
         return rect.right - rect.left;
 #endif
-    return static_cast<int>(width() * devicePixelRatio());
+    return qRound(width() * devicePixelRatio());
 }
 
 int GameWindow::drawable_height() const {
@@ -276,7 +276,7 @@ int GameWindow::drawable_height() const {
     if (GetClientRect(reinterpret_cast<HWND>(winId()), &rect))
         return rect.bottom - rect.top;
 #endif
-    return static_cast<int>(height() * devicePixelRatio());
+    return qRound(height() * devicePixelRatio());
 }
 
 std::vector<std::string> GameWindow::font_dirs() const {

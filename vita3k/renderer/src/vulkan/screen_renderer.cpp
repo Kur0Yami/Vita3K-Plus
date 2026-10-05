@@ -252,6 +252,7 @@ void ScreenRenderer::create_swapchain() {
         extent.height = std::clamp<uint32_t>(static_cast<uint32_t>(frame_host->drawable_height()), surface_capabilities.minImageExtent.height, surface_capabilities.maxImageExtent.height);
     }
 
+    confirmed_window_size = vk::Extent2D{};
     if (extent.width == 0 || extent.height == 0)
         return;
 
@@ -805,8 +806,23 @@ bool ScreenRenderer::surface_matches_window_size() {
     if (frame_host->drawable_width() == 0 || frame_host->drawable_height() == 0)
         return true;
 
-    return extent.width == static_cast<uint32_t>(frame_host->drawable_width())
-        && extent.height == static_cast<uint32_t>(frame_host->drawable_height());
+    const vk::Extent2D window_size{ static_cast<uint32_t>(frame_host->drawable_width()), static_cast<uint32_t>(frame_host->drawable_height()) };
+    if (window_size == extent || window_size == confirmed_window_size)
+        return true;
+
+    // Qt's scaled window size can differ from the window's real size (fractional scaling on Linux)
+    // and the surface extent is the one the swapchain has to match
+    vk::Extent2D surface_extent{};
+    try {
+        surface_extent = state.physical_device.getSurfaceCapabilitiesKHR(surface).currentExtent;
+    } catch (const vk::SystemError &) {
+        return false;
+    }
+    if (surface_extent.width == std::numeric_limits<uint32_t>::max() || surface_extent != extent)
+        return false;
+
+    confirmed_window_size = window_size;
+    return true;
 }
 
 } // namespace renderer::vulkan

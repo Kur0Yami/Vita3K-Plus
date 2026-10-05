@@ -81,6 +81,8 @@ public:
     bool need_rebuild = false;
     // a size disagreement that lasts one frame should not cause a swapchain rebuild
     int size_mismatch_frames = 0;
+    // a window size that disagrees with the swapchain extent while the surface itself agrees with it
+    vk::Extent2D confirmed_window_size{};
     // why the last rebuild happened, for the log
     const char *rebuild_reason = "initial";
     // the swapchain images were created with eTransferDst (required by render_transfer)

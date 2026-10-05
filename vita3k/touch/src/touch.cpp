@@ -309,7 +309,8 @@ int handle_touch_event(TouchState &state, SDL_TouchFingerEvent &finger) {
         state.finger_count++;
         break;
     }
-    case SDL_EVENT_FINGER_UP: {
+    case SDL_EVENT_FINGER_UP:
+    case SDL_EVENT_FINGER_CANCELED: {
         const int index = find_down_finger(state, finger.fingerID);
         if (index < 0)
             break;
