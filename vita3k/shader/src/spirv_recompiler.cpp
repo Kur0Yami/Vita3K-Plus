@@ -2411,17 +2411,9 @@ static SpirvCode convert_gxp_to_spirv_impl(const SceGxmProgram &program, const s
         }
 
         // Initialize vertex output to 0
-        if (program.is_vertex()) {
-            spv::Id i32_type = b.makeIntType(32);
-            spv::Id ite = b.createVariable(spv::NoPrecision, spv::StorageClassFunction, i32_type, "i");
-            spv::Id v4 = b.makeVectorType(b.makeFloatType(32), 4);
-            spv::Id rezero = b.makeFloatConstant(0.0f);
-            spv::Id rezero_v = b.makeCompositeConstant(v4, { rezero, rezero, rezero, rezero });
-            utils::make_for_loop(b, ite, b.makeIntConstant(0), b.makeIntConstant(REG_O_COUNT / 4), [&]() {
-                spv::Id dest = utils::create_access_chain(b, spv::StorageClassPrivate, parameters.outs, { b.createLoad(ite, spv::NoPrecision) });
-                b.createStore(rezero_v, dest);
-            });
-        }
+        // with one store of the whole array: zeroing it in a loop crashes the stock Adreno shader compiler
+        if (program.is_vertex())
+            b.createStore(b.makeNullConstant(b.getContainedTypeId(b.getTypeId(parameters.outs))), parameters.outs);
 
         log_pn_predicates(program, translation_state.hash);
         generate_shader_body(b, parameters, program, features, utils, begin_hook_func, end_hook_func, texture_queries, translation_state.render_info_id, spv_func_main, translation_state.interfaces);

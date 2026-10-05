@@ -59,6 +59,8 @@ struct TextureCacheInfo {
     // used for texture importation
     bool is_imported = false;
     bool is_srgb = false;
+    // content hash of the palette of a paletted texture
+    uint64_t palette_hash = 0;
     uint16_t width = 0;
     uint16_t height = 0;
     uint16_t mip_count = 0;

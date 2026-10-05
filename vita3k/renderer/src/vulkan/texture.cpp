@@ -28,6 +28,7 @@
 
 #include <gxm/functions.h>
 #include <gxm/types.h>
+#include <mem/util.h>
 #include <renderer/functions.h>
 #include <util/align.h>
 #include <vkutil/vkutil.h>
@@ -83,17 +84,59 @@ uint64_t VKTextureCache::release_all_cached_textures() {
             entry.texture.destroy();
         }
         entry.memory_needed = 0;
+        cached_bytes -= entry.image_bytes;
+        entry.image_bytes = 0;
     }
     current_texture = nullptr;
     gxm_texture = nullptr;
     return freed;
 }
 
+void VKTextureCache::release_image(TextureCacheEntry &entry) {
+    if (entry.texture.image)
+        state.frame().destroy_queue.add_image(entry.texture);
+    cached_bytes -= entry.image_bytes;
+    entry.image_bytes = 0;
+}
+
+void VKTextureCache::create_image(const vk::ImageCreateInfo &image_info) {
+    // a game can bind far more distinct textures than fit in memory (a P8 sheet is cached once for each palette, as RGBA8)
+    // so make room by evicting the least recently used images
+    for (auto *item = texture_queue.head->prev; cached_bytes + current_texture->memory_needed > memory_budget && item != texture_queue.head; item = item->prev) {
+        TextureCacheInfo &info = item->content;
+        TextureCacheEntry &entry = textures[info.index];
+        if (&entry == current_texture || !entry.texture.image)
+            continue;
+
+        LOG_INFO_ONCE("Texture cache reached its {} MiB budget, evicting the least recently used textures", memory_budget / MiB(1));
+        texture_lookup.erase(std::bit_cast<TextureGxmDataRepr>(info.texture));
+        info.texture_size = 0;
+        info.dirty = false;
+        info.use_hash = false;
+        info.last_hash_scene = 0;
+        release_image(entry);
+        entry.memory_needed = 0;
+    }
+
+    vkutil::Image &image = current_texture->texture;
+    vma::AllocationInfo allocation_info;
+    try {
+        std::tie(image.image, image.allocation) = state.allocator.createImage(image_info, vkutil::vma_auto_alloc, allocation_info);
+    } catch (const vk::SystemError &) {
+        LOG_ERROR("Could not allocate a {}x{} {} texture: cached textures hold {} MiB of a {} MiB budget", image_info.extent.width, image_info.extent.height, vk::to_string(image_info.format), cached_bytes / MiB(1), memory_budget / MiB(1));
+        throw;
+    }
+    current_texture->image_bytes = allocation_info.size;
+    cached_bytes += allocation_info.size;
+}
+
 void VKTextureCache::cleanup() {
     for (auto &entry : textures) {
         if (entry.texture.image)
             entry.texture.destroy();
+        entry.image_bytes = 0;
     }
+    cached_bytes = 0;
 
     for (auto &sampler : samplers)
         state.device.destroy(sampler);
@@ -350,6 +393,13 @@ bool VKTextureCache::init(const bool hashless_texture_cache, const fs::path &tex
     const vk::FormatProperties astc_support = state.physical_device.getFormatProperties(vk::Format::eAstc4x4SrgbBlock);
     support_astc = static_cast<bool>(astc_support.optimalTilingFeatures & vk::FormatFeatureFlagBits::eSampledImage);
 
+    // an integrated GPU can report only a small carve-out as device local while its images can also live in system memory
+    vk::DeviceSize heap_size = 0;
+    for (uint32_t i = 0; i < state.physical_device_memory.memoryHeapCount; i++)
+        heap_size = std::max(heap_size, state.physical_device_memory.memoryHeaps[i].size);
+    memory_budget = std::clamp<vk::DeviceSize>(heap_size / 4, MiB(256), GiB(2));
+    LOG_INFO("Texture cache budget: {} MiB (largest memory heap {} MiB)", memory_budget / MiB(1), heap_size / MiB(1));
+
     return true;
 }
 
@@ -483,8 +533,7 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
 
     // In case the cache is full, no need to put the previous image in the destroy queue
     // because of texture importation, we must be careful when destroying an image
-    if (image.image)
-        state.frame().destroy_queue.add_image(image);
+    release_image(*current_texture);
 
     // manually initialize the image
     image.width = width;
@@ -509,7 +558,7 @@ void VKTextureCache::configure_texture(const SceGxmTexture &gxm_texture) {
         .initialLayout = vk::ImageLayout::eUndefined,
     };
 
-    std::tie(image.image, image.allocation) = state.allocator.createImage(image_info, vkutil::vma_auto_alloc);
+    create_image(image_info);
 
     // create image view
     vk::ImageSubresourceRange range{
@@ -735,8 +784,7 @@ void VKTextureCache::import_configure_impl(SceGxmTextureBaseFormat base_format, 
     vkutil::Image &image = current_texture->texture;
     // In case the cache is full, no need to put the previous image in the destroy queue
     // because of texture importation, we must be careful when destroying an image
-    if (image.image)
-        state.frame().destroy_queue.add_image(image);
+    release_image(*current_texture);
 
     vk::Format vk_format = texture::translate_format(base_format);
     if (is_srgb)
@@ -765,7 +813,7 @@ void VKTextureCache::import_configure_impl(SceGxmTextureBaseFormat base_format, 
         .initialLayout = vk::ImageLayout::eUndefined,
     };
 
-    std::tie(image.image, image.allocation) = state.allocator.createImage(image_info, vkutil::vma_auto_alloc);
+    create_image(image_info);
 
     // create image view
     vk::ImageSubresourceRange range{

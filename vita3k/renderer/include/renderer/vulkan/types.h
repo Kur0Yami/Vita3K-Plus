@@ -54,12 +54,18 @@ struct TextureCacheEntry {
     bool is_cube;
     uint16_t mip_count;
     uint32_t memory_needed;
+    vk::DeviceSize image_bytes = 0;
 };
 
 struct VKTextureCache : public TextureCache {
     VKState &state;
 
     uint64_t release_all_cached_textures();
+
+    vk::DeviceSize memory_budget = 0;
+    vk::DeviceSize cached_bytes = 0;
+    void release_image(TextureCacheEntry &entry);
+    void create_image(const vk::ImageCreateInfo &image_info);
 
     TextureStagingBuffer staging_buffers[NB_TEXTURE_STAGING_BUFFERS];
     uint32_t staging_idx = 0;
