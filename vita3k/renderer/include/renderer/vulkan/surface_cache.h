@@ -101,6 +101,7 @@ struct ColorSurfaceCacheInfo : public SurfaceCacheInfo {
     uint32_t stride_bytes;
     uint64_t last_frame_rendered;
     uint64_t last_scene_rendered = 0;
+    uint64_t written_back_scene = 0;
     uint16_t rendered_w = 0;
     uint16_t rendered_h = 0;
     uint16_t bound_width = 0;
@@ -422,6 +423,7 @@ public:
     // so that subsequent calls to check_for_surface with the target destination also get delayed
     bool check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address, uint32_t source_size = 0);
     std::map<Address, ColorSurfaceCacheInfo *>::iterator find_color_surface_containing(Address address, uint32_t size);
+    bool has_newer_overlapping_surface(const ColorSurfaceCacheInfo &surface) const;
     // Called when a guest address is about to be read by the GPU through raw buffer
     // accesses (e.g. a uniform buffer aliasing a rendered surface, like Killzone Mercenary's
     // bloom chain reading its HDR render target). If the address lies inside a

@@ -869,6 +869,7 @@ SurfaceRetrieveResult VKSurfaceCache::retrieve_color_surface_for_framebuffer(Mem
     last_written_surface = &info_added;
     info_added.need_surface_sync.reset();
     info_added.need_surface_sync = std::make_shared<bool>(false);
+    info_added.written_back_scene = 0;
     info_added.dirty = std::make_shared<bool>(false);
     info_added.gpu_read_sync_only = false;
     info_added.content_is_blended = false;
@@ -2498,6 +2499,18 @@ std::map<Address, ColorSurfaceCacheInfo *>::iterator VKSurfaceCache::find_color_
     return contains(it) ? it : color_address_lookup.end();
 }
 
+bool VKSurfaceCache::has_newer_overlapping_surface(const ColorSurfaceCacheInfo &surface) const {
+    const uint64_t begin = surface.data.address();
+    const uint64_t end = begin + surface.total_bytes;
+    for (const auto &[base, info] : color_address_lookup) {
+        if (info == &surface || base >= end || static_cast<uint64_t>(base) + info->total_bytes <= begin)
+            continue;
+        if (info->last_scene_rendered > surface.last_scene_rendered)
+            return true;
+    }
+    return false;
+}
+
 bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, CallbackRequestFunction &callback, Address target_address, uint32_t source_size) {
     if (!state.features.enable_memory_mapping || state.disable_surface_sync)
         return false;
@@ -2521,14 +2534,14 @@ bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, Ca
 
     auto &surface = *it->second;
     VKContext &context = *static_cast<VKContext *>(state.context);
-    // if the frame is already rendered skip
-    // Note: that's not the best behavior but it should be fine
-    // also it prevents invalidated surfaces from causing issues
-    if (surface.last_frame_rendered + MAX_FRAMES_RENDERING <= context.frame_timestamp)
+    // a surface rendered frames ago is up to date in memory only if it was written back since or the CPU wrote over it
+    const bool stale = surface.last_frame_rendered + MAX_FRAMES_RENDERING <= context.frame_timestamp;
+    const bool sync_stale = stale && surface.written_back_scene < surface.last_scene_rendered && !*surface.dirty && !has_newer_overlapping_surface(surface);
+    if (stale && !sync_stale)
         return false;
 
     // we found something
-    if (!*surface.need_surface_sync) {
+    if (!*surface.need_surface_sync || sync_stale) {
         // first send the command to sync the surface with the GPU
         *surface.need_surface_sync = true;
 
@@ -3077,6 +3090,9 @@ ColorSurfaceCacheInfo *VKSurfaceCache::perform_surface_sync() {
     } else {
         cmd_buffer.copyImageToBuffer(image_to_copy, image_layout, buffer, copy);
     }
+
+    if (!last_written_surface->gpu_read_sync_only)
+        last_written_surface->written_back_scene = last_written_surface->last_scene_rendered;
 
     ColorSurfaceCacheInfo *return_value = last_written_surface;
     last_written_surface = nullptr;
