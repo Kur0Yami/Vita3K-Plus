@@ -32,8 +32,10 @@
 #include <util/hash.h>
 #include <util/log.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <set>
@@ -44,12 +46,49 @@
 
 #include <SDL3/SDL_cpuinfo.h>
 
+#if defined(__linux__)
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 // don't use the dispatch version, because we always hash a small amount
 // with a known size
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
 namespace renderer::vulkan {
+
+static constexpr bool probe_before_defer = true;
+static constexpr bool warm_at_program_creation = true;
+static constexpr bool sync_new_surface_draws = false; // the surface was not drawn to in the last 60 frames (off: the main scene counts as new after a loading screen so a level's first frame froze for seconds on a cold cache)
+static constexpr bool sync_depth_stencil_writers = false; // the draw writes depth or stencil (off: nearly every new pipeline of a 3D game does so async would almost never defer)
+static constexpr bool save_in_background = true;
+
+namespace {
+uint64_t now_s() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+uint64_t warm_pair_key(const Sha256Hash &vertex, const Sha256Hash &fragment, SceGxmOutputRegisterFormat output_format) {
+    std::array<uint8_t, 68> data;
+    memcpy(data.data(), vertex.data(), 32);
+    memcpy(data.data() + 32, fragment.data(), 32);
+    const uint32_t format = static_cast<uint32_t>(output_format);
+    memcpy(data.data() + 64, &format, sizeof(format));
+    return XXH3_64bits(data.data(), data.size());
+}
+
+// a skipped draw that writes depth or stencil changes what the later draws of the frame show
+bool writes_depth_or_stencil(const GxmRecordState &record) {
+    const bool two_sided = record.two_sided == SCE_GXM_TWO_SIDED_ENABLED;
+    const auto stencil_writes = [](const GxmStencilStateOp &op) {
+        return op.stencil_fail != SCE_GXM_STENCIL_OP_KEEP || op.depth_fail != SCE_GXM_STENCIL_OP_KEEP || op.depth_pass != SCE_GXM_STENCIL_OP_KEEP;
+    };
+    return record.front_depth_write_mode == SCE_GXM_DEPTH_WRITE_ENABLED || (two_sided && record.back_depth_write_mode == SCE_GXM_DEPTH_WRITE_ENABLED)
+        || stencil_writes(record.front_stencil_state_op) || (two_sided && stencil_writes(record.back_stencil_state_op));
+}
+} // namespace
 
 // Size of the record containing what is needed for the pipeline construction (what is after is dynamic state)
 constexpr size_t record_pipeline_len = offsetof(GxmRecordState, vertex_streams);
@@ -285,6 +324,18 @@ void PipelineCache::init(bool support_rasterized_order_access) {
         use_async_compilation = false;
         set_async_compilation(true);
     }
+
+    support_cache_only_creation = state.support_pipeline_cache_control;
+    if (warm_at_program_creation) {
+        warm_render_pass = retrieve_render_pass(vk::Format::eR8G8B8A8Unorm, true, true, true, false);
+        if (state.features.support_shader_interlock)
+            warm_interlock_render_pass = retrieve_render_pass(vk::Format::eR8G8B8A8Unorm, true, true, true, false, true);
+        const int warm_thread_count = std::clamp(nb_worker_threads, 1, 2);
+        warm_threads.reserve(warm_thread_count);
+        for (int i = 0; i < warm_thread_count; i++)
+            warm_threads.emplace_back(&PipelineCache::warm_thread, this, std::ref(*state.mem));
+        warm_enabled = true;
+    }
 }
 
 void PipelineCache::set_async_compilation(bool enable) {
@@ -396,6 +447,46 @@ void PipelineCache::read_pipeline_cache() {
 }
 
 void PipelineCache::save_pipeline_cache() {
+    wait_for_background_save();
+    std::vector<uint64_t> keys;
+    keys.reserve(pipelines.size());
+    for (const auto &[hash, _] : pipelines)
+        keys.push_back(hash);
+    write_pipeline_cache(keys);
+}
+
+void PipelineCache::save_pipeline_cache_async() {
+    if (!save_in_background) {
+        save_pipeline_cache();
+        return;
+    }
+    if (save_running) {
+        // the previous save is still writing, try again shortly
+        next_pipeline_cache_save = now_s() + 2;
+        return;
+    }
+    wait_for_background_save();
+    std::vector<uint64_t> keys;
+    keys.reserve(pipelines.size());
+    for (const auto &[hash, _] : pipelines)
+        keys.push_back(hash);
+    save_running = true;
+    save_thread = std::thread([this, keys = std::move(keys)]() {
+        try {
+            write_pipeline_cache(keys);
+        } catch (const std::exception &error) {
+            LOG_ERROR("Could not save the pipeline cache: {}", error.what());
+        }
+        save_running = false;
+    });
+}
+
+void PipelineCache::wait_for_background_save() {
+    if (save_thread.joinable())
+        save_thread.join();
+}
+
+void PipelineCache::write_pipeline_cache(const std::vector<uint64_t> &keys) {
     // first save the shader hashes
     // do a copy for thread safety
     std::vector<ShadersHash> shader_cache_copy;
@@ -424,8 +515,8 @@ void PipelineCache::save_pipeline_cache() {
         pipeline_cache_file.write(reinterpret_cast<const char *>(&val), sizeof(T));
     };
     write_integer(pipeline_cache_magic);
-    write_integer(pipelines.size());
-    for (auto &[hash, _] : pipelines) {
+    write_integer(keys.size());
+    for (const uint64_t hash : keys) {
         write_integer(hash);
     }
 
@@ -436,6 +527,19 @@ void PipelineCache::save_pipeline_cache() {
 }
 
 void PipelineCache::cleanup() {
+    stop_warm_threads();
+    wait_for_background_save();
+    warm_render_pass = nullptr;
+    warm_interlock_render_pass = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(warm_mutex);
+        warm_pairs_requested.clear();
+        pairs_drawn.clear();
+        warm_states.clear();
+    }
+    draw_states.clear();
+    draw_states_total = 0;
+
     // stop threads (queued requests are abandoned at shutdown)
     if (use_async_compilation) {
         use_async_compilation = false;
@@ -517,14 +621,10 @@ static const vk::SpecializationInfo frag_spec_infos[4] = {
     { .mapEntryCount = 2, .pMapEntries = frag_spec_entries, .dataSize = sizeof(frag_spec_data[3]), .pData = frag_spec_data[3] },
 };
 
-vk::PipelineShaderStageCreateInfo PipelineCache::retrieve_shader(const SceGxmProgram *program, const Sha256Hash &base_hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb, bool has_casts) {
-    if (maskupdate)
-        LOG_WARN_ONCE("Mask not implemented in the vulkan renderer!");
-
+static Sha256Hash shader_cache_key(const SceGxmProgram *program, const Sha256Hash &base_hash, bool is_vertex, const shader::Hints &hints, std::string &version_suffix) {
     // A one-channel surface moves a different component into the stored channel, so it needs its own cache entry
     const int one_channel_source = is_vertex ? -1 : gxm::one_channel_source_component(hints.color_format);
     Sha256Hash hash = base_hash;
-    std::string version_suffix;
     if (one_channel_source > 0) {
         hash[0] ^= static_cast<uint8_t>(0xC0 + one_channel_source);
         version_suffix = fmt::format("c{}", one_channel_source);
@@ -543,12 +643,34 @@ vk::PipelineShaderStageCreateInfo PipelineCache::retrieve_shader(const SceGxmPro
         hash[6] ^= 0x75;
         version_suffix += "u";
     }
+    return hash;
+}
+
+vk::PipelineShaderStageCreateInfo PipelineCache::retrieve_shader(const SceGxmProgram *program, const Sha256Hash &base_hash, bool is_vertex, bool maskupdate, MemState &mem, const shader::Hints &hints, bool is_srgb, bool has_casts, bool ready_only) {
+    if (maskupdate)
+        LOG_WARN_ONCE("Mask not implemented in the vulkan renderer!");
+
+    std::string version_suffix;
+    const Sha256Hash hash = shader_cache_key(program, base_hash, is_vertex, hints, version_suffix);
 
     const vk::ShaderModule shader_compiling = std::bit_cast<vk::ShaderModule>(~0ULL);
 
     // entries for constants a module does not declare are ignored, and is_srgb is only declared along shader interlock
     const bool srgb = is_srgb && state.features.should_use_shader_interlock() && program->is_frag_color_used();
     const vk::SpecializationInfo *spec_info = is_vertex ? nullptr : &frag_spec_infos[(srgb ? 2 : 0) | (has_casts ? 1 : 0)];
+
+    if (ready_only) {
+        std::lock_guard<std::mutex> guard(shaders_mutex);
+        const auto found = shaders.find(hash);
+        if (found == shaders.end() || found->second == nullptr || found->second == shader_compiling)
+            return {};
+        return vk::PipelineShaderStageCreateInfo{
+            .stage = is_vertex ? vk::ShaderStageFlagBits::eVertex : vk::ShaderStageFlagBits::eFragment,
+            .module = found->second,
+            .pName = is_vertex ? "main_vs" : "main_fs",
+            .pSpecializationInfo = spec_info,
+        };
+    }
 
     vk::ShaderModule *shader_module;
     {
@@ -1213,7 +1335,7 @@ static vk::StencilOpState convert_op_state(const GxmStencilStateOp &state) {
     };
 }
 
-vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::RenderPass render_pass, const ProgramBinding &vertex_program_binding, const ProgramBinding &fragment_program_binding, const GxmRecordState &record, bool has_color_surface_data, const shader::Hints &hints, bool has_casts, MemState &mem) try {
+vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::RenderPass render_pass, const ProgramBinding &vertex_program_binding, const ProgramBinding &fragment_program_binding, const GxmRecordState &record, bool has_color_surface_data, const shader::Hints &hints, bool has_casts, MemState &mem, bool cache_only) try {
     const VertexProgram &vertex_program = *vertex_program_binding.vertex_program;
     const SceGxmProgram *gxm_fragment_shader = fragment_program_binding.program();
     const VKFragmentProgram &fragment_program = *reinterpret_cast<VKFragmentProgram *>(
@@ -1228,8 +1350,11 @@ vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::Rende
     shader::Hints fragment_hints = hints;
     fragment_hints.raw_color_attachment_input = with_raw_attachment && state.features.direct_fragcolor && gxm_fragment_shader->is_frag_color_used();
 
-    const vk::PipelineShaderStageCreateInfo vertex_shader = retrieve_shader(vertex_program_binding.program(), vertex_program.hash, true, fragment_program_binding.is_maskupdate, mem, hints);
-    const vk::PipelineShaderStageCreateInfo fragment_shader = retrieve_shader(gxm_fragment_shader, fragment_program.hash, false, fragment_program_binding.is_maskupdate, mem, fragment_hints, record.is_gamma_corrected, has_casts);
+    const vk::PipelineShaderStageCreateInfo vertex_shader = retrieve_shader(vertex_program_binding.program(), vertex_program.hash, true, fragment_program_binding.is_maskupdate, mem, hints, false, false, cache_only);
+    const vk::PipelineShaderStageCreateInfo fragment_shader = retrieve_shader(gxm_fragment_shader, fragment_program.hash, false, fragment_program_binding.is_maskupdate, mem, fragment_hints, record.is_gamma_corrected, has_casts, cache_only);
+    if (cache_only && (!vertex_shader.module || !fragment_shader.module))
+        // a cache-only request never translates a shader on the calling thread
+        return nullptr;
     const vk::PipelineShaderStageCreateInfo shader_stages[] = { vertex_shader, fragment_shader };
     // disable the fragment shader if gxm asks us to
     const bool is_fragment_disabled = record.front_side_fragment_program_mode == SCE_GXM_FRAGMENT_PROGRAM_DISABLED || gxm_fragment_shader->has_no_effect();
@@ -1334,7 +1459,7 @@ vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::Rende
 
     // The stock Adreno driver can SIGSEGV inside createGraphicsPipeline
     // If the log ends on this line this exact vert/frag pair killed the driver's compiler
-    if (state.is_adreno_stock)
+    if (state.is_adreno_stock && !cache_only)
         LOG_INFO("[PIPE] stock-Adreno: compiling pipeline vert={} frag={} ({})", hex_string(vertex_program.hash),
             hex_string(fragment_program.hash), is_fragment_disabled ? "frag-disabled" : "frag-enabled");
 
@@ -1342,8 +1467,13 @@ vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::Rende
     // the whole emulator down before the check below could run. Some drivers (notably Mesa/Turnip)
     // also report an internal shader-compiler rejection as ErrorOutOfHostMemory rather than a
     // specific error.
+    if (cache_only)
+        pipeline_info.flags |= vk::PipelineCreateFlagBits::eFailOnPipelineCompileRequiredEXT;
     try {
         const auto result = state.device.createGraphicsPipeline(pipeline_cache, pipeline_info);
+        if (result.result == vk::Result::ePipelineCompileRequiredEXT)
+            // not in the driver cache
+            return nullptr;
         if (result.result != vk::Result::eSuccess) {
             LOG_CRITICAL("Failed to create pipeline: {}", vk::to_string(result.result));
             return nullptr;
@@ -1606,8 +1736,14 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
                 return nullptr;
             if (raw_pipeline_keys_seen.insert(raw_key).second)
                 state.pipelines_redundant_avoided++;
-            if (it->second == pipeline_compiling)
-                return nullptr;
+            if (it->second == pipeline_compiling) {
+                // a worker is compiling it for an earlier draw (a draw that must not be skipped waits for it)
+                if (!use_async_compilation || !must_not_skip_draw(record, consider_for_async))
+                    return nullptr;
+                while (it->second == pipeline_compiling)
+                    std::this_thread::yield();
+                return it->second == pipeline_failed ? nullptr : it->second;
+            }
             return it->second;
         }
         already_in_cache = true;
@@ -1621,6 +1757,21 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
     const SceGxmProgram *gxm_fragment_shader = fragment_program_binding->program();
     const bool use_shader_interlock = state.features.support_shader_interlock && gxm_fragment_shader->is_frag_color_used();
     const vk::RenderPass render_pass = use_shader_interlock ? context.current_shader_interlock_pass : context.current_render_pass;
+
+    // the warm threads learn from it which draw states new pipelines use
+    const WarmState draw_state{
+        .color_format = static_cast<uint32_t>(record.color_surface.colorFormat),
+        .raw = state.features.preserve_f16_nan_as_u16 && !use_shader_interlock && record.color_base_format == SCE_GXM_COLOR_BASE_FORMAT_F16F16F16F16 && static_cast<bool>(record.color_surface.data),
+        .casts = has_casts,
+        .render_pass = context.current_render_pass,
+        .interlock_render_pass = context.current_shader_interlock_pass,
+    };
+    note_draw_state(draw_state);
+    const uint64_t draw_pair = warm_pair_key(vertex_program_binding->vertex_program->hash, fragment_program.hash, fragment_program.output_register_format);
+    {
+        std::lock_guard<std::mutex> guard(warm_mutex);
+        pairs_drawn.insert(draw_pair);
+    }
     // update the shader hints
     context.shader_hints.color_format = record.color_surface.colorFormat;
     context.shader_hints.attributes = &vertex_program_binding->attributes;
@@ -1672,8 +1823,19 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
         }
     }
 
-    // note: the flag can_use_deferred_compilation is not considered here because it causes way too many false positives
-    const bool compile_pipeline_async = !already_in_cache && consider_for_async && use_async_compilation;
+    const bool compile_pipeline_async = !already_in_cache && use_async_compilation && !must_not_skip_draw(record, consider_for_async);
+
+    if (compile_pipeline_async && probe_before_defer && support_cache_only_creation) {
+        // the driver can already hold this pipeline, for example the same shaders with other render state, and then
+        // hands it over without compiling
+        const vk::Pipeline probed = compile_pipeline(type, render_pass, *vertex_program_binding, *fragment_program_binding, record, static_cast<bool>(record.color_surface.data), context.shader_hints, has_casts, mem, true);
+        if (probed) {
+            next_pipeline_cache_save = now_s() + pipeline_cache_save_delay;
+            state.shaders_count_compiled++;
+            it->second = probed;
+            return probed;
+        }
+    }
 
     if (compile_pipeline_async) {
         // create the pipeline compile request
@@ -1712,7 +1874,7 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
 
 vk::ShaderModule PipelineCache::precompile_shader(const Sha256Hash &hash, bool search_first) try {
     if (search_first) {
-        // happens while loading the thread, no parallel access so no need for a mutex
+        std::lock_guard<std::mutex> guard(shaders_mutex);
         auto it = shaders.find(hash);
         if (it != shaders.end())
             return it->second;
@@ -1744,5 +1906,182 @@ vk::ShaderModule PipelineCache::precompile_shader(const Sha256Hash &hash, bool s
 } catch (const std::exception &error) {
     LOG_ERROR("Could not load cached shader {}: {}", hex_string(hash), error.what());
     return nullptr;
+}
+
+bool PipelineCache::must_not_skip_draw(const GxmRecordState &record, bool consider_for_async) const {
+    return !consider_for_async || (sync_new_surface_draws && !can_use_deferred_compilation) || (sync_depth_stencil_writers && writes_depth_or_stencil(record));
+}
+
+void PipelineCache::warm_program_pair(const std::shared_ptr<ProgramBinding> &vertex, const std::shared_ptr<ProgramBinding> &fragment) {
+    if (!warm_enabled || !vertex || !fragment || !vertex->vertex_program || !fragment->fragment_program || fragment->is_maskupdate)
+        return;
+    const uint64_t pair = warm_pair_key(vertex->vertex_program->hash, fragment->fragment_program->hash, fragment->fragment_program->output_register_format);
+    {
+        std::lock_guard<std::mutex> guard(warm_mutex);
+        if (!warm_pairs_requested.insert(pair).second)
+            return;
+    }
+    warm_queue.enqueue(new WarmRequest{ vertex, fragment, pair });
+}
+
+void PipelineCache::warm_thread(MemState &mem) {
+#if defined(__linux__)
+    // below the guest and render threads: this work only pays off later
+    setpriority(PRIO_PROCESS, static_cast<id_t>(syscall(SYS_gettid)), 10);
+#endif
+    while (true) {
+        WarmRequest *request = nullptr;
+        warm_queue.wait_dequeue(request);
+        if (!request)
+            break;
+        if (!warm_stopping)
+            warm_pair(*request, mem);
+        delete request;
+    }
+}
+
+void PipelineCache::stop_warm_threads() {
+    warm_enabled = false;
+    warm_stopping = true;
+    for (size_t i = 0; i < warm_threads.size(); i++)
+        warm_queue.enqueue(nullptr);
+    for (auto &thread : warm_threads) {
+        if (thread.joinable())
+            thread.join();
+    }
+    warm_threads.clear();
+    WarmRequest *request;
+    while (warm_queue.try_dequeue(request))
+        delete request;
+    warm_stopping = false;
+}
+
+bool PipelineCache::codegen_ignores_draw_hints(const SceGxmProgram &program, bool is_vertex, const shader::Hints &hints) {
+    struct Variant {
+        SceGxmTextureFormat texture;
+        SceGxmColorFormat color;
+        bool no_attributes;
+    };
+    static constexpr Variant variants[] = {
+        { SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ABGR, SCE_GXM_COLOR_FORMAT_U8U8U8U8_ABGR, false },
+        { SCE_GXM_TEXTURE_FORMAT_F32_R, SCE_GXM_COLOR_FORMAT_F16F16F16F16_ABGR, true },
+        { SCE_GXM_TEXTURE_FORMAT_F16F16_GR, SCE_GXM_COLOR_FORMAT_U5U6U5_BGR, true },
+        { SCE_GXM_TEXTURE_FORMAT_S16S16S16S16_ABGR, SCE_GXM_COLOR_FORMAT_U8U8U8U8_ABGR, false },
+    };
+    static const std::vector<SceGxmVertexAttribute> no_attributes;
+    const bool vary_color = !is_vertex && !program.is_frag_color_used();
+    shader::usse::SpirvCode reference;
+    for (const Variant &variant : variants) {
+        shader::Hints variant_hints = hints;
+        std::fill_n(is_vertex ? variant_hints.vertex_textures : variant_hints.fragment_textures, SCE_GXM_MAX_TEXTURE_UNITS, variant.texture);
+        if (vary_color)
+            variant_hints.color_format = variant.color;
+        if (is_vertex && variant.no_attributes)
+            variant_hints.attributes = &no_attributes;
+        const shader::GeneratedShader generated = shader::convert_gxp(program, "warm", state.features, shader::Target::SpirVVulkan, variant_hints, false, false);
+        if (generated.spirv.empty())
+            return false;
+        if (reference.empty())
+            reference = generated.spirv;
+        else if (generated.spirv != reference)
+            return false;
+    }
+    return true;
+}
+
+bool PipelineCache::shader_available(const SceGxmProgram &program, const Sha256Hash &base_hash, bool is_vertex, const shader::Hints &hints) {
+    std::string version_suffix;
+    const Sha256Hash hash = shader_cache_key(&program, base_hash, is_vertex, hints, version_suffix);
+    {
+        std::lock_guard<std::mutex> guard(shaders_mutex);
+        const auto found = shaders.find(hash);
+        if (found != shaders.end() && found->second != nullptr)
+            return true;
+    }
+    return fs::exists(state.shaders_path / fmt::format("vk{}{}-{}.spv", shader::CURRENT_VERSION, version_suffix, hex_string(base_hash)));
+}
+
+void PipelineCache::warm_pair(const WarmRequest &request, MemState &mem) try {
+    const ProgramBinding &vertex_binding = *request.vertex;
+    const ProgramBinding &fragment_binding = *request.fragment;
+    const SceGxmProgram &vertex_gxp = *vertex_binding.program();
+    const SceGxmProgram &fragment_gxp = *fragment_binding.program();
+
+    std::vector<WarmState> states;
+    {
+        std::lock_guard<std::mutex> guard(warm_mutex);
+        // a draw already created a pipeline for it, so the driver cache holds that draw's state
+        if (pairs_drawn.contains(request.pair_key))
+            return;
+        states = warm_states;
+    }
+    if (states.empty()) {
+        // nothing drawn yet: an RGBA8 surface without casts
+        states.push_back(WarmState{
+            .color_format = static_cast<uint32_t>(SCE_GXM_COLOR_FORMAT_U8U8U8U8_ABGR),
+            .render_pass = warm_render_pass,
+            .interlock_render_pass = warm_interlock_render_pass,
+        });
+    }
+
+    shader::Hints hints{
+        .attributes = &vertex_binding.attributes,
+        .color_format = SCE_GXM_COLOR_FORMAT_U8U8U8U8_ABGR,
+    };
+    std::fill_n(hints.vertex_textures, SCE_GXM_MAX_TEXTURE_UNITS, SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ABGR);
+    std::fill_n(hints.fragment_textures, SCE_GXM_MAX_TEXTURE_UNITS, SCE_GXM_TEXTURE_FORMAT_U8U8U8U8_ABGR);
+    hints.output_register_format = fragment_binding.fragment_program->output_register_format;
+
+    // a stage with no cached module is only generated here when the draw would generate the same module
+    if (!shader_available(vertex_gxp, vertex_binding.vertex_program->hash, true, hints) && !codegen_ignores_draw_hints(vertex_gxp, true, hints))
+        return;
+
+    const bool interlock = state.features.support_shader_interlock && fragment_gxp.is_frag_color_used();
+    for (const WarmState &warm_state : states) {
+        hints.color_format = static_cast<SceGxmColorFormat>(warm_state.color_format);
+        if (!shader_available(fragment_gxp, fragment_binding.fragment_program->hash, false, hints) && !codegen_ignores_draw_hints(fragment_gxp, false, hints))
+            continue;
+        const vk::RenderPass render_pass = interlock ? warm_state.interlock_render_pass : warm_state.render_pass;
+        if (!render_pass)
+            continue;
+        GxmRecordState record{};
+        record.color_base_format = gxm::get_base_format(hints.color_format);
+        const bool has_color_surface_data = warm_state.raw || record.color_base_format != SCE_GXM_COLOR_BASE_FORMAT_F16F16F16F16;
+
+        vk::Pipeline pipeline;
+        if (support_cache_only_creation)
+            pipeline = compile_pipeline(SCE_GXM_PRIMITIVE_TRIANGLES, render_pass, vertex_binding, fragment_binding, record, has_color_surface_data, hints, warm_state.casts, mem, true);
+        if (!pipeline)
+            pipeline = compile_pipeline(SCE_GXM_PRIMITIVE_TRIANGLES, render_pass, vertex_binding, fragment_binding, record, has_color_surface_data, hints, warm_state.casts, mem);
+        if (!pipeline)
+            continue;
+        // only the driver cache entry is wanted: the draw creates its own pipeline from it
+        state.device.destroyPipeline(pipeline);
+    }
+} catch (const std::exception &error) {
+    LOG_WARN("[PIPEWARM] background compile failed: {}", error.what());
+}
+
+void PipelineCache::note_draw_state(const WarmState &draw_state) {
+    auto &entry = draw_states[draw_state.key()];
+    if (entry.second == 0)
+        entry.first = draw_state;
+    entry.second++;
+    draw_states_total++;
+
+    // the most common state
+    std::vector<std::pair<uint32_t, const WarmState *>> ranked;
+    for (const auto &[state_key, value] : draw_states)
+        ranked.push_back({ value.second, &value.first });
+    std::sort(ranked.begin(), ranked.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+    std::vector<WarmState> top;
+    for (size_t i = 0; i < ranked.size() && top.size() < 2; i++) {
+        if (i > 0 && ranked[i].first * 4 < draw_states_total)
+            break;
+        top.push_back(*ranked[i].second);
+    }
+    std::lock_guard<std::mutex> guard(warm_mutex);
+    if (top.size() != warm_states.size() || !std::equal(top.begin(), top.end(), warm_states.begin(), [](const WarmState &a, const WarmState &b) { return a.key() == b.key(); }))
+        warm_states = top;
 }
 } // namespace renderer::vulkan

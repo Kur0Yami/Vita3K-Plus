@@ -1554,6 +1554,7 @@ struct SceGxmShaderPatcher {
     VertexProgramCache vertex_program_cache;
     FragmentProgramCache fragment_program_cache;
     SceGxmShaderPatcherParams params;
+    std::multimap<Address, std::weak_ptr<renderer::ProgramBinding>> pending_warm;
 };
 
 // clang-format off
@@ -4833,6 +4834,18 @@ EXPORT(int, sceGxmShaderPatcherCreate, const SceGxmShaderPatcherParams *params, 
     return 0;
 }
 
+// the renderer compiles each vertex/fragment pair in the background while the game creates its programs (usually while
+// loading), so the driver has compiled the shaders before the first draw needs them
+static void warm_program_pair(EmuEnvState &emuenv, SceGxmShaderPatcher &patcher, Address vertex_program, const std::shared_ptr<renderer::ProgramBinding> &fragment) {
+    for (const auto &[key, program] : patcher.vertex_program_cache) {
+        if (key.vertex_program.program.address() == vertex_program) {
+            renderer::warm_pipeline(*emuenv.renderer, program.get(emuenv.mem)->renderer_binding, fragment);
+            return;
+        }
+    }
+    patcher.pending_warm.emplace(vertex_program, fragment);
+}
+
 EXPORT(int, sceGxmShaderPatcherCreateFragmentProgram, SceGxmShaderPatcher *shaderPatcher, const SceGxmRegisteredProgram *programId, SceGxmOutputRegisterFormat outputFormat, SceGxmMultisampleMode multisampleMode, const SceGxmBlendInfo *blendInfo, Ptr<const SceGxmProgram> vertexProgram, Ptr<SceGxmFragmentProgram> *fragmentProgram) {
     TRACY_FUNC(sceGxmShaderPatcherCreateFragmentProgram, shaderPatcher, programId, outputFormat, multisampleMode, blendInfo, vertexProgram, fragmentProgram);
     MemState &mem = emuenv.mem;
@@ -4892,6 +4905,8 @@ EXPORT(int, sceGxmShaderPatcherCreateFragmentProgram, SceGxmShaderPatcher *shade
     gxm_program_register(fragmentProgram->address(), GxmProgramKind::Fragment);
 
     shaderPatcher->fragment_program_cache.emplace(key, *fragmentProgram);
+    if (vertexProgram)
+        warm_program_pair(emuenv, *shaderPatcher, vertexProgram.address(), fp->renderer_binding);
 
     return 0;
 }
@@ -4975,6 +4990,13 @@ EXPORT(int, sceGxmShaderPatcherCreateVertexProgram, SceGxmShaderPatcher *shaderP
     vp->renderer_data = std::move(renderer_data);
     vp->renderer_binding = make_vertex_program_binding(*vp, mem);
     gxm_program_register(vertexProgram->address(), GxmProgramKind::Vertex);
+
+    const auto pending = shaderPatcher->pending_warm.equal_range(programId->program.address());
+    for (auto it = pending.first; it != pending.second; ++it) {
+        if (const auto fragment = it->second.lock())
+            renderer::warm_pipeline(*emuenv.renderer, vp->renderer_binding, fragment);
+    }
+    shaderPatcher->pending_warm.erase(pending.first, pending.second);
 
     shaderPatcher->vertex_program_cache.emplace(key, *vertexProgram);
 

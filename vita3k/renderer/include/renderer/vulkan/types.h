@@ -19,10 +19,12 @@
 
 #include <renderer/texture_cache.h>
 
+#include <chrono>
 #include <deque>
 #include <renderer/types.h>
 #include <shader/uniform_block.h>
 #include <unordered_map>
+#include <utility>
 #include <vkutil/objects.h>
 
 struct MemState;
@@ -63,9 +65,18 @@ struct VKTextureCache : public TextureCache {
     uint64_t release_all_cached_textures();
 
     vk::DeviceSize memory_budget = 0;
+    // the budget the memory pressure check grows back to
+    vk::DeviceSize default_budget = 0;
     vk::DeviceSize cached_bytes = 0;
+    std::chrono::steady_clock::time_point next_memory_check{};
     void release_image(TextureCacheEntry &entry);
     void create_image(const vk::ImageCreateInfo &image_info);
+    // evicts the least recently used images until the cached bytes plus incoming fit the budget, returns how many and their bytes
+    std::pair<uint32_t, vk::DeviceSize> evict_to_budget(vk::DeviceSize incoming);
+    // evict down to three quarters of what is cached lower the budget to it and free what earlier frames released
+    void recover_texture_memory();
+    // once a second shrink the budget when the system's available memory is under an eighth of its RAM
+    void relieve_memory_pressure();
 
     TextureStagingBuffer staging_buffers[NB_TEXTURE_STAGING_BUFFERS];
     uint32_t staging_idx = 0;
@@ -382,6 +393,12 @@ struct VKContext : public renderer::Context {
     uint16_t last_macroblock_y = ~0;
     // special case where we can't determine the current macroblock
     bool ignore_macroblock = false;
+    struct TextureUnitRange {
+        uint32_t begin = 0;
+        uint32_t end = 0;
+    };
+    std::array<TextureUnitRange, 32> texture_unit_ranges{};
+    uint64_t recording_serial = 0;
 
     // used to clamp perform_surface_sync for macrotile targets so that only the rendered macroblocks are written back to guest memory
     int32_t rendered_rect_x0 = INT32_MAX;
@@ -423,7 +440,11 @@ struct VKContext : public renderer::Context {
     void stop_recording(const SceGxmNotification &notif1, const SceGxmNotification &notif2, bool submit = true);
 
     // check (when the render target has macroblock set) if we are drawing to another block
-    void check_for_macroblock_change(bool is_draw);
+    void check_for_macroblock_change(bool is_draw, bool draw_reads_target = true);
+    // whether a texture unit the current programs use overlaps the render target's colour or depth memory
+    void find_render_target_reads(bool &reads_color, bool &reads_depth) const;
+    // whether a draw that reads its render target needs the recording restarted first
+    bool read_needs_restart(bool reads_color, bool reads_depth) const;
 
     // waits for the GPU until size bytes can be copied without overwriting what a submission still reads
     void vertex_ring_make_room(uint32_t size);

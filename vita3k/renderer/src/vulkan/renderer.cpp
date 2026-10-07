@@ -735,6 +735,8 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
             { vk::KHRShaderFloat16Int8ExtensionName, &support_fsr },
             // used for accurate programmable blending on desktop GPUs
             { vk::EXTFragmentShaderInterlockExtensionName, &support_shader_interlock },
+            // lets a pipeline be requested from the driver cache without compiling it
+            { vk::EXTPipelineCreationCacheControlExtensionName, &support_pipeline_cache_control },
 #ifdef __APPLE__
             // Needed to create the MoltenVK device
             { vk::KHRPortabilitySubsetExtensionName, &temp_bool },
@@ -883,6 +885,12 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
             features.support_shader_interlock = support_shader_interlock;
         }
 
+        support_pipeline_cache_control &= has_features2_khr;
+        if (support_pipeline_cache_control) {
+            auto props = physical_device.getFeatures2KHR<vk::PhysicalDeviceFeatures2, vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT>();
+            support_pipeline_cache_control = static_cast<bool>(props.get<vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT>().pipelineCreationCacheControl);
+        }
+
         constexpr bool raw_preserve_needs_interlock = false;
         features.preserve_f16_nan_as_u16 = static_cast<bool>(physical_device_features.independentBlend) && (!raw_preserve_needs_interlock || features.support_shader_interlock);
 
@@ -897,7 +905,8 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
             vk::PhysicalDeviceUniformBufferStandardLayoutFeatures,
             vk::PhysicalDeviceShaderFloat16Int8Features,
             vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT,
-            vk::PhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT>
+            vk::PhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT,
+            vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT>
             device_info{
                 vk::DeviceCreateInfo{
                     .pEnabledFeatures = &enabled_features },
@@ -911,7 +920,9 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
                 vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT{
                     .fragmentShaderSampleInterlock = VK_TRUE },
                 vk::PhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT{
-                    .rasterizationOrderColorAttachmentAccess = VK_TRUE }
+                    .rasterizationOrderColorAttachmentAccess = VK_TRUE },
+                vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT{
+                    .pipelineCreationCacheControl = VK_TRUE }
             };
         device_info.get().setQueueCreateInfos(queue_infos);
         device_info.get().setPEnabledExtensionNames(device_extensions);
@@ -930,6 +941,9 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
 
         if (!support_shader_interlock)
             device_info.unlink<vk::PhysicalDeviceFragmentShaderInterlockFeaturesEXT>();
+
+        if (!support_pipeline_cache_control)
+            device_info.unlink<vk::PhysicalDevicePipelineCreationCacheControlFeaturesEXT>();
 
         try {
             device = physical_device.createDevice(device_info.get());
@@ -1513,6 +1527,8 @@ void VKState::swap_window() {
         logging::flush();
     }
 
+    texture_cache.relieve_memory_pressure();
+
     // look once a frame if we need to save the pipeline cache
     const auto time_s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
@@ -1530,9 +1546,8 @@ void VKState::swap_window() {
     }
 
     if (time_s >= pipeline_cache.next_pipeline_cache_save) {
-        pipeline_cache.save_pipeline_cache();
-
         pipeline_cache.next_pipeline_cache_save = std::numeric_limits<uint64_t>::max();
+        pipeline_cache.save_pipeline_cache_async();
     }
 }
 

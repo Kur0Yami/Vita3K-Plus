@@ -33,6 +33,10 @@
 
 namespace renderer::vulkan {
 
+static constexpr bool restart_macroblock_pass_only_before_reads = true;
+static constexpr bool slow_path_ignores_macroblock_moves = true;
+static constexpr bool skip_read_restart_when_reads_use_copies = true;
+
 void VKState::start_gpu_request_wait_thread(const MemState &mem) {
     if (!gpu_request_wait_thread.joinable())
         gpu_request_wait_thread = std::thread(&VKState::wait_thread_function, this, std::cref(mem));
@@ -396,6 +400,7 @@ void VKContext::start_recording(bool first_in_scene) {
         render_target->fence_idx = (render_target->fence_idx + 1) % render_target->fences.size();
     }
 
+    recording_serial++;
     render_cmd = render_target->cmd_buffers[state.current_frame_idx][render_target->cmd_buffer_idx];
     prerender_cmd = render_target->pre_cmd_buffers[state.current_frame_idx][render_target->cmd_buffer_idx];
     render_target->cmd_buffer_idx++;
@@ -918,15 +923,17 @@ void VKContext::fill_half_pixel_strips() {
             | vk::AccessFlagBits::eInputAttachmentRead | vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite);
 }
 
-void VKContext::check_for_macroblock_change(bool is_draw) {
+void VKContext::check_for_macroblock_change(bool is_draw, bool draw_reads_target) {
     if (!render_target->has_macroblock_sync)
         return;
 
+    bool entering_slow_path = false;
     if (!ignore_macroblock && (scissor.extent.width > render_target->macroblock_width || scissor.extent.height > render_target->macroblock_height)) {
         // flower does not specify a scissor adapted to the current macroblock
-        // so fallback to the slow path (one scene per draw, can't really do better)
+        // so fallback to the slow path (whole-target render passes, restarted before a draw that reads the target)
         // TODO: with the feedback loop extension we can do better
         ignore_macroblock = true;
+        entering_slow_path = true;
         // in this case we must load and store the depth stencil each time
         current_render_pass = state.pipeline_cache.retrieve_render_pass(current_color_format, true, true, true, !record.color_surface.data, false, record.color_base_format == SCE_GXM_COLOR_BASE_FORMAT_F16F16F16F16);
     }
@@ -935,7 +942,16 @@ void VKContext::check_for_macroblock_change(bool is_draw) {
     uint16_t curr_macroblock_x = scissor.offset.x / render_target->macroblock_width;
     uint16_t curr_macroblock_y = scissor.offset.y / render_target->macroblock_height;
 
-    if ((ignore_macroblock && is_draw) || curr_macroblock_x != last_macroblock_x || curr_macroblock_y != last_macroblock_y) {
+    const bool macroblock_moved = curr_macroblock_x != last_macroblock_x || curr_macroblock_y != last_macroblock_y;
+    // a draw that does not read the render target can stay in the render pass
+    const bool restart_for_draw = ignore_macroblock && is_draw && (!restart_macroblock_pass_only_before_reads || draw_reads_target);
+    const bool restart_for_move = macroblock_moved && !(ignore_macroblock && slow_path_ignores_macroblock_moves);
+    if (macroblock_moved && !restart_for_move) {
+        last_macroblock_x = curr_macroblock_x;
+        last_macroblock_y = curr_macroblock_y;
+    }
+    // entering the slow path restarts an open pass: it was begun for one macroblock and its render area covers only that
+    if (restart_for_draw || restart_for_move || entering_slow_path) {
         // we changed the current macroblock, restart the renderpass
         last_macroblock_x = curr_macroblock_x;
         last_macroblock_y = curr_macroblock_y;
@@ -955,6 +971,33 @@ void VKContext::check_for_macroblock_change(bool is_draw) {
             }
         }
     }
+}
+
+void VKContext::find_render_target_reads(bool &reads_color, bool &reads_depth) const {
+    reads_color = false;
+    reads_depth = false;
+    const uint32_t color_begin = record.color_surface.data.address();
+    const uint32_t color_end = color_begin
+        + static_cast<uint32_t>(record.color_surface.strideInPixels * record.color_surface.height * gxm::bits_per_pixel(record.color_base_format) / 8);
+    const uint32_t depth_begin = record.depth_stencil_surface.depth_data.address();
+    const uint32_t depth_end = depth_begin + record.color_surface.strideInPixels * record.color_surface.height * 4;
+    const auto check_units = [&](const uint32_t first, const uint32_t count) {
+        for (uint32_t unit = first; unit < first + count && unit < texture_unit_ranges.size(); unit++) {
+            const TextureUnitRange &range = texture_unit_ranges[unit];
+            if (range.begin == 0)
+                continue;
+            if (color_begin && range.begin < color_end && color_begin < range.end)
+                reads_color = true;
+            if (depth_begin && range.begin < depth_end && depth_begin < range.end)
+                reads_depth = true;
+        }
+    };
+    check_units(0, record.fragment_program_binding->fragment_program->texture_count);
+    check_units(SCE_GXM_MAX_TEXTURE_UNITS, record.vertex_program_binding->vertex_program->texture_count);
+}
+
+bool VKContext::read_needs_restart(const bool reads_color, const bool reads_depth) const {
+    return reads_depth || (reads_color && !(skip_read_restart_when_reads_use_copies && !state.features.use_texture_viewport));
 }
 
 void new_frame(VKContext &context) {

@@ -403,8 +403,62 @@ uint16_t get_upload_mip(const uint16_t true_mip, const uint16_t width, const uin
 
 using namespace texture;
 
+TextureCache::ContentKey TextureCache::content_key(TextureGxmDataRepr shape, const uint64_t hash, const uint64_t palette_hash) {
+    shape[2] = 0;
+    ContentKey key;
+    key.hash = hash;
+    key.palette_hash = palette_hash;
+    key.shape = shape;
+    return key;
+}
+
+TextureCache::ContentKey TextureCache::registered_key(const TextureCacheInfo &info) {
+    return content_key(std::bit_cast<TextureGxmDataRepr>(info.texture), info.registered_hash, info.registered_palette_hash);
+}
+
+void TextureCache::remember_content(TextureCacheInfo &info) {
+    forget_content(info);
+    if (!info.use_hash || info.texture_size == 0)
+        return;
+    info.registered_hash = info.hash;
+    info.registered_palette_hash = info.palette_hash;
+    info.content_registered = true;
+    content_lookup[registered_key(info)] = &info;
+}
+
+void TextureCache::forget_content(TextureCacheInfo &info) {
+    if (!info.content_registered)
+        return;
+    const auto it = content_lookup.find(registered_key(info));
+    if (it != content_lookup.end() && it->second == &info)
+        content_lookup.erase(it);
+    info.content_registered = false;
+}
+
+bool TextureCache::content_left_address(const TextureCacheInfo &info, const MemState &mem) {
+    return !info.content_registered || (hash_texture_data(info.texture, info.texture_size, mem) ^ 1) != info.registered_hash;
+}
+
+void TextureCache::move_entry(TextureCacheInfo &info, const TextureGxmDataRepr &texture_repr, const uint32_t texture_size, const uint64_t hash) {
+    erase_key(info);
+    texture_lookup[texture_repr] = &info;
+    info.texture = std::bit_cast<SceGxmTexture>(texture_repr);
+    info.texture_size = texture_size;
+    info.hash = hash;
+    info.use_hash = true;
+    info.dirty = false;
+    info.last_hash_scene = current_scene;
+}
+
+void TextureCache::erase_key(const TextureCacheInfo &info) {
+    const auto it = texture_lookup.find(std::bit_cast<TextureGxmDataRepr>(info.texture));
+    if (it != texture_lookup.end() && it->second == &info)
+        texture_lookup.erase(it);
+}
+
 bool TextureCache::init(const bool hashless_texture_cache, const fs::path &texture_folder, std::string_view game_id, const size_t sampler_cache_size) {
     use_protect = hashless_texture_cache;
+    content_lookup.clear();
 
     // initialize the texture queue
     texture_queue.init(TextureCacheSize);
@@ -476,8 +530,10 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
         }
     }
 
-    std::vector<uint8_t> texture_data_decompressed;
-    std::vector<uint8_t> texture_pixels_lineared;
+    std::vector<uint8_t> &texture_data_decompressed = scratch_decompressed;
+    std::vector<uint8_t> &texture_pixels_lineared = scratch_lineared;
+    texture_data_decompressed.clear();
+    texture_pixels_lineared.clear();
 
     const void *pixels = nullptr;
 
@@ -760,6 +816,12 @@ void TextureCache::upload_texture(const SceGxmTexture &gxm_texture, MemState &me
             texture_data += total_source_so_far - source_unaligned_size;
         }
     }
+
+    // one very large texture should not keep its buffers forever
+    if (texture_data_decompressed.capacity() > 32u * 1024 * 1024)
+        std::vector<uint8_t>().swap(texture_data_decompressed);
+    if (texture_pixels_lineared.capacity() > 32u * 1024 * 1024)
+        std::vector<uint8_t>().swap(texture_pixels_lineared);
 }
 
 // remove everything related to the sampler state
@@ -808,49 +870,69 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
     TextureCacheInfo *info;
     if (cached_gxm_texture_index == -1) {
         // Texture not found in cache.
-        // get the least recently used texture, which info_list_head points to
-        info = texture_queue.get_lru();
-        index = info->index;
-        if (info->texture_size > 0) {
-            // Cache is full.
-            LOG_WARN_ONCE("Texture cache is full. Starting to replace textures");
-            texture_lookup.erase(std::bit_cast<TextureGxmDataRepr>(info->texture));
-        }
-        texture_lookup[texture_repr] = info;
-
-        configure = true;
-        upload = true;
         // track the WHOLE mip chain, not just the first level
-        info->texture_size = gxm::texture_size(gxm_texture);
-        if (info->texture_size > 0 && !is_valid_addr_range(mem, gxm_texture.data_addr << 2, (gxm_texture.data_addr << 2) + info->texture_size))
-            info->texture_size = gxm::texture_size_first_mip(gxm_texture);
-        // use the texture_repr representation, it contains everything we need and we can use it to erase the key
-        // from texture_lookup later
-        info->texture = std::bit_cast<SceGxmTexture>(texture_repr);
-        info->palette_hash = palette_hash;
+        uint32_t texture_size = gxm::texture_size(gxm_texture);
+        if (texture_size > 0 && !is_valid_addr_range(mem, gxm_texture.data_addr << 2, (gxm_texture.data_addr << 2) + texture_size))
+            texture_size = gxm::texture_size_first_mip(gxm_texture);
 
         // To prevent protecting too commonly accessed data that belongs to the page where the texture also resides
         // (for example, uniform buffer value and texture data got mixed, so page faults are triggered too many, it's not always good).
         // This works under the assumption that once this big enough texture decided to modify. It will have to modify either all of its data,
         // or replace with an entire new texture.
         bool should_use_hash = true;
-        if (use_protect && info->texture_size >= mem.host_page_size * 4) {
+        if (use_protect && texture_size >= mem.host_page_size * 4) {
             range_protect_begin = align(gxm_texture.data_addr << 2, mem.host_page_size);
-            range_protect_end = align_down((gxm_texture.data_addr << 2) + info->texture_size, mem.host_page_size);
+            range_protect_end = align_down((gxm_texture.data_addr << 2) + texture_size, mem.host_page_size);
 
             if (range_protect_end - range_protect_begin >= mem.host_page_size * 4) {
                 should_use_hash = protect_only_is_sufficient;
             }
         }
 
-        info->use_hash = should_use_hash;
-        info->last_hash_scene = current_scene;
-        if (info->use_hash) {
+        uint64_t hash = 0;
+        if (should_use_hash) {
             if (import_textures || export_textures)
-                info->hash = hash_texture_nostride(gxm_texture, mem);
+                hash = hash_texture_nostride(gxm_texture, mem);
             else
                 // the xor 1 is to make sure it won't be the same as hash_texture_nostride
-                info->hash = hash_texture_data(gxm_texture, info->texture_size, mem) ^ 1;
+                hash = hash_texture_data(gxm_texture, texture_size, mem) ^ 1;
+        }
+
+        TextureCacheInfo *duplicate_of = nullptr;
+        if (should_use_hash && !import_textures && !export_textures) {
+            const ContentKey key = content_key(texture_repr, hash, palette_hash);
+            const auto duplicate = content_lookup.find(key);
+            if (duplicate != content_lookup.end() && duplicate->second->texture_size > 0 && registered_key(*duplicate->second) == key)
+                duplicate_of = duplicate->second;
+        }
+        // a paletted entry no longer has the palette address its content check would need
+        if (move_duplicate_texture_content && duplicate_of && !gxm::is_paletted_format(key_base_format) && content_left_address(*duplicate_of, mem)) {
+            info = duplicate_of;
+            index = info->index;
+            move_entry(*info, texture_repr, texture_size, hash);
+            configure = false;
+            upload = false;
+        } else {
+            // get the least recently used texture, which info_list_head points to
+            info = texture_queue.get_lru();
+            index = info->index;
+            forget_content(*info);
+            if (info->texture_size > 0) {
+                // Cache is full.
+                LOG_WARN_ONCE("Texture cache is full. Starting to replace textures");
+                erase_key(*info);
+            }
+            texture_lookup[texture_repr] = info;
+
+            configure = true;
+            upload = true;
+            info->texture_size = texture_size;
+            info->texture = std::bit_cast<SceGxmTexture>(texture_repr);
+            info->palette_hash = palette_hash;
+            info->use_hash = should_use_hash;
+            info->last_hash_scene = current_scene;
+            if (info->use_hash)
+                info->hash = hash;
         }
     } else {
         // Texture is cached.
@@ -878,6 +960,21 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
         if (paletted && info->palette_hash != palette_hash) {
             info->palette_hash = palette_hash;
             upload = true;
+        }
+        if (move_into_rewritten_address && upload && info->use_hash && !import_textures && !export_textures && !gxm::is_paletted_format(key_base_format)) {
+            const ContentKey key = content_key(texture_repr, info->hash, palette_hash);
+            const auto holder = content_lookup.find(key);
+            if (holder != content_lookup.end() && holder->second != info && holder->second->texture_size > 0 && registered_key(*holder->second) == key
+                && content_left_address(*holder->second, mem)) {
+                TextureCacheInfo *const target = holder->second;
+                const uint64_t new_hash = info->hash;
+                if (info->content_registered)
+                    info->hash = info->registered_hash;
+                move_entry(*target, texture_repr, info->texture_size, new_hash);
+                info = target;
+                index = info->index;
+                upload = false;
+            }
         }
     }
     current_info = info;
@@ -946,6 +1043,11 @@ void TextureCache::cache_and_bind_texture(const SceGxmTexture &gxm_texture, MemS
             export_done();
         if (importing_texture)
             import_done();
+
+        if (info->use_hash && !import_textures && !export_textures)
+            remember_content(*info);
+        else
+            forget_content(*info);
     }
     importing_texture = false;
 

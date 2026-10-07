@@ -17,8 +17,11 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace mem_diag {
 
 void log_memory_snapshot(const char *tag);
+bool read_available_memory(uint64_t &available_kib, uint64_t &total_kib);
 
 } // namespace mem_diag

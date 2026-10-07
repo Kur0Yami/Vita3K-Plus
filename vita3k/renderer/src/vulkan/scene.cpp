@@ -392,6 +392,19 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
     context.render_cmd.bindVertexBuffers(0, buffers, offsets);
 }
 
+static void draw_bounds(const VKContext &context, int32_t &x0, int32_t &y0, int32_t &x1, int32_t &y1) {
+    const int32_t sx0 = context.scissor.offset.x, sy0 = context.scissor.offset.y;
+    const int32_t sx1 = sx0 + static_cast<int32_t>(context.scissor.extent.width), sy1 = sy0 + static_cast<int32_t>(context.scissor.extent.height);
+    const int32_t vx0 = static_cast<int32_t>(std::floor(std::min(context.viewport.x, context.viewport.x + context.viewport.width)));
+    const int32_t vy0 = static_cast<int32_t>(std::floor(std::min(context.viewport.y, context.viewport.y + context.viewport.height)));
+    const int32_t vx1 = static_cast<int32_t>(std::ceil(std::max(context.viewport.x, context.viewport.x + context.viewport.width)));
+    const int32_t vy1 = static_cast<int32_t>(std::ceil(std::max(context.viewport.y, context.viewport.y + context.viewport.height)));
+    x0 = std::max(sx0, vx0);
+    y0 = std::max(sy0, vy0);
+    x1 = std::min(sx1, vx1);
+    y1 = std::min(sy1, vy1);
+}
+
 void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format,
     Ptr<void> indices, size_t count, uint32_t instance_count, uint64_t index_snapshot, MemState &mem, const Config &config) {
     // the mask bit is not emulated here, so a mask-update program would just paint writing_mask over the whole target (gl/draw.cpp skips these too)
@@ -463,7 +476,11 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
     }
     context.scene_has_drawn = true;
 
-    context.check_for_macroblock_change(true);
+    bool reads_color = false;
+    bool reads_depth = false;
+    if (context.render_target->has_macroblock_sync)
+        context.find_render_target_reads(reads_color, reads_depth);
+    context.check_for_macroblock_change(true, context.read_needs_restart(reads_color, reads_depth));
 
     if (!context.in_renderpass)
         context.start_render_pass();
@@ -557,6 +574,15 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
     // can happen with asynchronous pipeline compilation
     if (context.current_pipeline == nullptr)
         return;
+
+    if (context.render_target->has_macroblock_sync && context.ignore_macroblock) {
+        int32_t x0, y0, x1, y1;
+        draw_bounds(context, x0, y0, x1, y1);
+        if (x1 > x0 && y1 > y0) {
+            const bool exact_coordinates = context.render_target->multisample_mode == SCE_GXM_MULTISAMPLE_NONE && context.surface_downscale == 1.0f;
+            context.state.surface_cache.refresh_casts_drawn_over(context.scene_timestamp, x0, y0, x1, y1, exact_coordinates);
+        }
+    }
 
     if (context.pipeline_stops_lrz_write != context.stencil_compare_mask_zeroed) {
         context.stencil_compare_mask_zeroed = context.pipeline_stops_lrz_write;

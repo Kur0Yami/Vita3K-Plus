@@ -129,6 +129,15 @@ void log_memory_snapshot(const char *tag) {
         (oom_adj == LONG_MIN) ? std::string("?") : std::to_string(oom_adj));
 }
 
+bool read_available_memory(uint64_t &available_kib, uint64_t &total_kib) {
+    char buf[4096];
+    if (!read_small_file("/proc/meminfo", buf, sizeof(buf)))
+        return false;
+    available_kib = field_value(buf, "MemAvailable");
+    total_kib = field_value(buf, "MemTotal");
+    return available_kib != UINT64_MAX && total_kib != UINT64_MAX;
+}
+
 } // namespace mem_diag
 
 #else // !__linux__
@@ -136,6 +145,10 @@ void log_memory_snapshot(const char *tag) {
 namespace mem_diag {
 
 void log_memory_snapshot(const char *) {
+}
+
+bool read_available_memory(uint64_t &, uint64_t &) {
+    return false;
 }
 
 } // namespace mem_diag

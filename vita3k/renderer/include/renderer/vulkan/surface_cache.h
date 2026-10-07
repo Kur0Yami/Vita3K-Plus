@@ -91,6 +91,7 @@ struct CastedTexture {
     uint32_t cropped_width = 0;
     uint32_t cropped_height = 0;
     SceGxmColorBaseFormat format;
+    uint64_t copy_recording = 0;
 };
 
 struct ColorSurfaceCacheInfo : public SurfaceCacheInfo {
@@ -303,6 +304,7 @@ private:
         vk::ImageView alt_view;
         ColorSurfaceCacheInfo *info;
         std::function<void(vk::CommandBuffer)> record;
+        uint32_t casted_index = UINT32_MAX;
     };
     std::vector<PendingCast> pending_casts;
 
@@ -392,6 +394,7 @@ public:
 
     void perform_pending_casts(VKContext &context, uint16_t vert_texture_count, uint16_t frag_texture_count);
     void flush_all_pending_casts();
+    void refresh_casts_drawn_over(uint64_t scene_timestamp, int32_t x0, int32_t y0, int32_t x1, int32_t y1, bool exact_coordinates);
 
     void mark_current_surface_blended() {
         if (last_written_surface)

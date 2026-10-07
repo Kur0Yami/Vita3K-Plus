@@ -2039,6 +2039,10 @@ static spv::Function *make_vert_finalize_function(spv::Builder &b, const SpirvSh
 
             if (vo == SCE_GXM_VERTEX_PROGRAM_OUTPUT_POSITION) {
                 b.addDecoration(out_var, spv::DecorationBuiltIn, spv::BuiltInPosition);
+                // every pipeline has to compute the same position from the same inputs
+                constexpr bool invariant_position = true;
+                if (invariant_position)
+                    b.addDecoration(out_var, spv::DecorationInvariant);
 
                 // Transform screen space coordinate to ndc when viewport is disabled.
                 const spv::Id f32 = b.makeFloatType(32);

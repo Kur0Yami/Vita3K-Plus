@@ -454,8 +454,12 @@ static void decompress_block_bc1(const uint8_t *block_storage, uint32_t *image) 
     b0 |= b0 >> 5;
     b1 |= b1 >> 5;
 
-    std::uint32_t c0 = 0xFF000000 | (b0 << 16) | (g0 << 8) | r0;
-    std::uint32_t c1 = 0xFF000000 | (b1 << 16) | (g1 << 8) | r1;
+    std::uint32_t colors[4] = {
+        0xFF000000 | (b0 << 16) | (g0 << 8) | r0,
+        0xFF000000 | (b1 << 16) | (g1 << 8) | r1,
+        0,
+        0
+    };
 
     if (n0 > n1) {
         std::uint8_t r2 = static_cast<uint8_t>((2 * r0 + r1 + 1) / 3);
@@ -465,52 +469,20 @@ static void decompress_block_bc1(const uint8_t *block_storage, uint32_t *image) 
         std::uint8_t b2 = static_cast<uint8_t>((2 * b0 + b1 + 1) / 3);
         std::uint8_t b3 = static_cast<uint8_t>((2 * b1 + b0 + 1) / 3);
 
-        std::uint32_t c2 = 0xFF000000 | (b2 << 16) | (g2 << 8) | r2;
-        std::uint32_t c3 = 0xFF000000 | (b3 << 16) | (g3 << 8) | r3;
-
-        for (int i = 0; i < 16; ++i) {
-            int index = (block_storage[i / 4] >> (i % 4 * 2)) & 0x03;
-            switch (index) {
-            case 0:
-                image[i] = c0;
-                break;
-            case 1:
-                image[i] = c1;
-                break;
-            case 2:
-                image[i] = c2;
-                break;
-            case 3:
-                image[i] = c3;
-                break;
-            }
-        }
+        colors[2] = 0xFF000000 | (b2 << 16) | (g2 << 8) | r2;
+        colors[3] = 0xFF000000 | (b3 << 16) | (g3 << 8) | r3;
     } else {
         // Transparent decode
         std::uint8_t r2 = static_cast<uint8_t>((r0 + r1) / 2);
         std::uint8_t g2 = static_cast<uint8_t>((g0 + g1) / 2);
         std::uint8_t b2 = static_cast<uint8_t>((b0 + b1) / 2);
 
-        std::uint32_t c2 = 0xFF000000 | (b2 << 16) | (g2 << 8) | r2;
-
-        for (int i = 0; i < 16; ++i) {
-            int index = (block_storage[i / 4] >> (i % 4 * 2)) & 0x03;
-            switch (index) {
-            case 0:
-                image[i] = c0;
-                break;
-            case 1:
-                image[i] = c1;
-                break;
-            case 2:
-                image[i] = c2;
-                break;
-            case 3:
-                image[i] = 0x00000000;
-                break;
-            }
-        }
+        colors[2] = 0xFF000000 | (b2 << 16) | (g2 << 8) | r2;
     }
+
+    const std::uint32_t indices = block_storage[0] | (block_storage[1] << 8) | (block_storage[2] << 16) | (static_cast<std::uint32_t>(block_storage[3]) << 24);
+    for (int i = 0; i < 16; ++i)
+        image[i] = colors[(indices >> (2 * i)) & 0x03];
 }
 
 /**
@@ -712,9 +684,8 @@ void decompress_bc_image(uint32_t width, uint32_t height, const uint8_t *block_s
                 decompress_func(block_storage, temp_block_result);
 
                 const uint32_t offset = j * 4 * line_size + i * 4;
-                for (uint32_t delta = 0; delta < 16; delta++) {
-                    img[offset + (delta % 4) + ((delta / 4) * line_size)] = temp_block_result[delta];
-                }
+                for (uint32_t row = 0; row < 4; row++)
+                    memcpy(&img[offset + row * line_size], &temp_block_result[row * 4], 4 * sizeof(T));
 
                 block_storage += block_size;
             }

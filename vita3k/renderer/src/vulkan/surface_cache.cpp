@@ -269,10 +269,44 @@ void VKSurfaceCache::destroy_framebuffers(vk::ImageView view) {
     }
 }
 
+static constexpr bool record_other_surface_casts_before_scene = true;
+
 void VKSurfaceCache::record_pending_cast(PendingCast &cast, VKContext &context) {
     const bool pre_scene = cast.info->last_scene_rendered == context.scene_timestamp && context.scene_has_drawn
         && !context.scene_macroblock_flushed;
+    CastedTexture *const casted = cast.casted_index < cast.info->casted_textures.size() ? &cast.info->casted_textures[cast.casted_index] : nullptr;
+    const bool own_target = last_written_surface && cast.info == last_written_surface;
+    const bool other_surface = casted && last_written_surface && !own_target && context.is_recording && context.prerender_cmd;
+    const bool copied_in_this_recording = casted && casted->copy_recording == context.recording_serial;
+    const bool other_before_scene = record_other_surface_casts_before_scene && !pre_scene && other_surface && !copied_in_this_recording;
+    if (casted)
+        casted->copy_recording = context.recording_serial;
     if (pre_scene) {
+        cast.record(context.prerender_cmd);
+        return;
+    }
+
+    if (other_before_scene) {
+        std::array<vk::ImageMemoryBarrier, 2> source_visible{};
+        uint32_t barrier_count = 0;
+        for (const vkutil::Image *image : { &cast.info->texture, cast.info->raw_image.get() }) {
+            if (!image || !image->image)
+                continue;
+            source_visible[barrier_count++] = vk::ImageMemoryBarrier{
+                .srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eShaderWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eShaderRead,
+                .oldLayout = vk::ImageLayout::eGeneral,
+                .newLayout = vk::ImageLayout::eGeneral,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = image->image,
+                .subresourceRange = vkutil::color_subresource_range
+            };
+        }
+        context.prerender_cmd.pipelineBarrier(
+            vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eFragmentShader,
+            vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eComputeShader, {}, {}, {},
+            vk::ArrayProxy<const vk::ImageMemoryBarrier>(barrier_count, source_visible.data()));
         cast.record(context.prerender_cmd);
         return;
     }
@@ -295,6 +329,28 @@ void VKSurfaceCache::record_pending_cast(PendingCast &cast, VKContext &context) 
         vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eComputeShader, {}, {}, {}, store_visible);
 
     cast.record(context.render_cmd);
+}
+
+void VKSurfaceCache::refresh_casts_drawn_over(const uint64_t scene_timestamp, const int32_t x0, const int32_t y0, const int32_t x1, const int32_t y1, const bool exact_coordinates) {
+    if (!last_written_surface)
+        return;
+    const uint32_t store_bytes = static_cast<uint32_t>(gxm::bits_per_pixel(last_written_surface->format) / 8);
+    for (CastedTexture &casted : last_written_surface->casted_textures) {
+        if (casted.scene_timestamp != scene_timestamp)
+            continue;
+        // the crop's x is counted in texels of the format read, the draw's in pixels of the surface
+        const uint32_t read_bytes = static_cast<uint32_t>(gxm::bits_per_pixel(casted.format) / 8);
+        bool covered = !exact_coordinates || !store_bytes || !read_bytes;
+        if (!covered) {
+            const int64_t cx0 = static_cast<int64_t>(casted.cropped_x) * read_bytes / store_bytes;
+            const int64_t cx1 = (static_cast<int64_t>(casted.cropped_x + casted.cropped_width) * read_bytes + store_bytes - 1) / store_bytes;
+            const int64_t cy0 = casted.cropped_y;
+            const int64_t cy1 = static_cast<int64_t>(casted.cropped_y) + casted.cropped_height;
+            covered = x0 < cx1 && cx0 < x1 && y0 < cy1 && cy0 < y1;
+        }
+        if (covered)
+            casted.scene_timestamp = 0;
+    }
 }
 
 void VKSurfaceCache::perform_pending_casts(VKContext &context, uint16_t vert_texture_count, uint16_t frag_texture_count) {
@@ -1461,7 +1517,7 @@ std::optional<TextureLookupResult> VKSurfaceCache::retrieve_color_surface_as_tex
             casted->texture.transition_to(cmd_buffer, vkutil::ImageLayout::SampledImage);
         };
 
-        pending_casts.push_back({ casted->texture.view, casted->alt_gamma_view, &info, std::move(record_cast) });
+        pending_casts.push_back({ casted->texture.view, casted->alt_gamma_view, &info, std::move(record_cast), static_cast<uint32_t>(casted_index) });
 
         const bool base_is_srgb = casted->texture.format == vk::Format::eR8G8B8A8Srgb;
         const bool use_alt_view = casted->alt_gamma_view && (is_srgb != base_is_srgb);

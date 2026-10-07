@@ -147,6 +147,8 @@ struct VKState : public renderer::State {
     // support for the VK_KHR_uniform_buffer_standard_layout extension, needed for memory mapping and texture viewport
     bool support_standard_layout = false;
     bool support_rasterized_order_access = false;
+    // VK_EXT_pipeline_creation_cache_control (a pipeline can be requested from the driver cache without compiling it)
+    bool support_pipeline_cache_control = false;
     bool is_mesa_turnip = false;
     // Turnip Adreno 6xx fix: a draw that switches pipeline waits for the draws before it
     bool wait_on_pipeline_switch = false;
