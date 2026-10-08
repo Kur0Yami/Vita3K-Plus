@@ -19,6 +19,7 @@
 #include <gxm/types.h>
 #include <renderer/commands.h>
 #include <renderer/driver_functions.h>
+#include <renderer/functions.h>
 #include <renderer/state.h>
 #include <renderer/types.h>
 
@@ -173,6 +174,7 @@ COMMAND(handle_sync_surface_data) {
         // unlocking before a notify should be faster
         lock.unlock();
         renderer.notification_ready.notify_all();
+        note_gpu_event();
     };
 
     if (renderer.disable_surface_sync)

@@ -86,7 +86,7 @@ public:
     bool stop(const MemState &mem, Voice *voice);
     bool off(const MemState &mem, Voice *voice);
 
-    void update(KernelState &kern, const MemState &mem, const SceUID thread_id);
+    void update(KernelState &kern, MemState &mem, const SceUID thread_id);
 
     Ptr<Patch> patch(const MemState &mem, SceNgsPatchSetupInfo *info);
 };

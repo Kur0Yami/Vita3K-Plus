@@ -73,6 +73,7 @@ COMMAND(handle_notification) {
             *val = notif.value;
     }
     renderer.notification_ready.notify_all();
+    note_gpu_event();
 }
 
 COMMAND(handle_set_screen_filter) {
@@ -196,6 +197,26 @@ SyncWaitResult wishlist(SceGxmSyncObject *sync_object, const uint32_t timestamp,
     return SyncWaitResult::Ready;
 }
 
+namespace {
+std::mutex gpu_event_mutex;
+std::condition_variable gpu_event_cond;
+uint64_t gpu_events = 0;
+} // namespace
+
+void note_gpu_event() {
+    {
+        const std::lock_guard<std::mutex> lock(gpu_event_mutex);
+        gpu_events++;
+    }
+    gpu_event_cond.notify_all();
+}
+
+uint64_t wait_gpu_event(const uint64_t seen, const uint32_t timeout_ms) {
+    std::unique_lock<std::mutex> lock(gpu_event_mutex);
+    gpu_event_cond.wait_for(lock, std::chrono::milliseconds(timeout_ms), [&] { return gpu_events != seen; });
+    return gpu_events;
+}
+
 void subject_done(SceGxmSyncObject *sync_object, const uint32_t timestamp) {
     assert(sync_object->timestamp_ahead >= timestamp);
     {
@@ -204,6 +225,7 @@ void subject_done(SceGxmSyncObject *sync_object, const uint32_t timestamp) {
     }
     // maybe notify_one is enough
     sync_object->cond.notify_all();
+    note_gpu_event();
 }
 
 void submit_command_list(State &state, renderer::Context *context, CommandList &command_list) {

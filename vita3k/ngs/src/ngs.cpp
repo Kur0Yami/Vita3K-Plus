@@ -390,7 +390,8 @@ void deinit(State &ngs, MemState &mem) {
     ngs.definitions = Ptr<VoiceDefinition>(0);
 }
 
-bool init_system(State &ngs, const MemState &mem, SceNgsSystemInitParams *parameters, Ptr<void> memspace, const uint32_t memspace_size) {
+bool init_system(State &ngs, MemState &mem, SceNgsSystemInitParams *parameters, Ptr<void> memspace, const uint32_t memspace_size) {
+    pin_to_arena(mem, memspace.address(), memspace_size);
     // Reserve first memory allocation for our System struct
     System *sys = memspace.cast<System>().get(mem);
     sys = new (sys) System(memspace, memspace_size);
@@ -410,7 +411,7 @@ bool init_system(State &ngs, const MemState &mem, SceNgsSystemInitParams *parame
     return true;
 }
 
-void release_system(State &ngs, const MemState &mem, System *system) {
+void release_system(State &ngs, MemState &mem, System *system) {
     // this function assumes no ngs mutex is being held
     for (Rack *rack : system->racks) {
         if (!rack)
@@ -419,16 +420,21 @@ void release_system(State &ngs, const MemState &mem, System *system) {
             system->voice_scheduler.deque_voice(voice.get(mem));
             voice.get(mem)->~Voice();
         }
+        const Address rack_memspace = rack->memspace.address();
         rack->~Rack();
+        unpin_from_arena(mem, rack_memspace);
     }
 
     system->racks.clear();
 
     vector_utils::erase_first(ngs.systems, system);
+    const Address memspace = system->memspace.address();
     system->~System();
+    unpin_from_arena(mem, memspace);
 }
 
-bool init_rack(State &ngs, const MemState &mem, System *system, SceNgsBufferInfo *init_info, const SceNgsRackDescription *description) {
+bool init_rack(State &ngs, MemState &mem, System *system, SceNgsBufferInfo *init_info, const SceNgsRackDescription *description) {
+    pin_to_arena(mem, init_info->data.address(), init_info->size);
     Rack *rack = init_info->data.cast<Rack>().get(mem);
     rack = new (rack) Rack(system, init_info->data, init_info->size);
 
@@ -483,7 +489,7 @@ bool init_rack(State &ngs, const MemState &mem, System *system, SceNgsBufferInfo
     return true;
 }
 
-void release_rack(State &ngs, const MemState &mem, System *system, Rack *rack) {
+void release_rack(State &ngs, MemState &mem, System *system, Rack *rack) {
     LOG_DEBUG("[NGSLIFE] release_rack {} ({} voices)", fmt::ptr(rack), rack ? rack->voices.size() : 0);
     // this function should only be called outside of ngs update and with the scheduler mutex acquired (except when releasing the system)
     if (!rack)
@@ -543,7 +549,9 @@ void release_rack(State &ngs, const MemState &mem, System *system, Rack *rack) {
     vector_utils::erase_first(system->racks, rack);
 
     // free pointer memory
+    const Address memspace = rack->memspace.address();
     rack->~Rack();
+    unpin_from_arena(mem, memspace);
 }
 
 Ptr<VoiceDefinition> get_voice_definition(State &ngs, MemState &mem, ngs::BussType type) {

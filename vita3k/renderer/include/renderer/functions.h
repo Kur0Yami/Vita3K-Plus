@@ -45,6 +45,8 @@ void warm_pipeline(State &state, const std::shared_ptr<ProgramBinding> &vertex, 
 void create(SceGxmSyncObject *sync, State &state);
 void destroy(SceGxmSyncObject *sync, State &state, std::function<void()> dealloc = nullptr);
 void finish(State &state, Context *context);
+void note_gpu_event();
+uint64_t wait_gpu_event(uint64_t seen, uint32_t timeout_ms);
 
 bool has_dormant_mappings();
 

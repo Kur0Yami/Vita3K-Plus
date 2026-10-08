@@ -356,10 +356,10 @@ bool deliver_data(const MemState &mem, const std::vector<Voice *> &voice_queue, 
 
 inline constexpr bool default_patch_volume_is_unity = true;
 
-bool init_system(State &ngs, const MemState &mem, SceNgsSystemInitParams *parameters, Ptr<void> memspace, const uint32_t memspace_size);
-void release_system(State &ngs, const MemState &mem, System *system);
-bool init_rack(State &ngs, const MemState &mem, System *system, SceNgsBufferInfo *init_info, const SceNgsRackDescription *description);
-void release_rack(State &ngs, const MemState &mem, System *system, Rack *rack);
+bool init_system(State &ngs, MemState &mem, SceNgsSystemInitParams *parameters, Ptr<void> memspace, const uint32_t memspace_size);
+void release_system(State &ngs, MemState &mem, System *system);
+bool init_rack(State &ngs, MemState &mem, System *system, SceNgsBufferInfo *init_info, const SceNgsRackDescription *description);
+void release_rack(State &ngs, MemState &mem, System *system, Rack *rack);
 void invoke_callback(KernelState &kernel, const MemState &mem, const SceUID thread_id, Ptr<void> callback, const SceNgsCallbackInfo &info);
 
 void voice_definition_init(State &ngs, MemState &mem);

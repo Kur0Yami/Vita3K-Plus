@@ -140,7 +140,7 @@ bool VoiceScheduler::off(const MemState &mem, Voice *voice) {
     return true;
 }
 
-void VoiceScheduler::update(KernelState &kern, const MemState &mem, const SceUID thread_id) {
+void VoiceScheduler::update(KernelState &kern, MemState &mem, const SceUID thread_id) {
     std::unique_lock<std::recursive_mutex> scheduler_lock(mutex);
     is_updating = true;
 

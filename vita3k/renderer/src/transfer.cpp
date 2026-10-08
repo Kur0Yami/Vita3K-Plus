@@ -437,6 +437,8 @@ COMMAND(handle_transfer_fill) {
         }
     }
 
+    if (renderer.current_backend == Backend::Vulkan && renderer.features.enable_memory_mapping)
+        dynamic_cast<vulkan::VKState &>(renderer).surface_cache.note_cpu_write(dest->address.address());
     // TODO: handle case where dest is a cached surface
 
     delete dest;

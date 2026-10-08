@@ -745,6 +745,21 @@ static void note_transition(MemState &mem, bool recopied_any) {
         LOG_INFO("[VERIFY] {} page-table transitions, {} had a concurrent-writer re-copy, {} of those with the world fully parked", mem.transition_count, mem.transition_recopy_events, mem.transition_recopy_events_fully_parked);
 }
 
+static bool is_arena_pinned(const MemState &mem, const uint64_t page_addr) {
+    for (const MemArenaPin &pin : mem.arena_pins) {
+        if (align_down(static_cast<uint64_t>(pin.address), KiB(4)) <= page_addr && page_addr < align(static_cast<uint64_t>(pin.address) + pin.size, KiB(4)))
+            return true;
+    }
+    return false;
+}
+
+static void protect_host_pages_inside(uint8_t *target, size_t size, const MemPerm perm, size_t host_page_size) {
+    uint8_t *const start = reinterpret_cast<uint8_t *>(align(reinterpret_cast<uintptr_t>(target), host_page_size));
+    uint8_t *const end = reinterpret_cast<uint8_t *>(align_down(reinterpret_cast<uintptr_t>(target + size), host_page_size));
+    if (end > start)
+        apply_host_protect(start, end - start, perm, host_page_size);
+}
+
 void add_external_mapping(MemState &mem, Address addr, uint32_t size, uint8_t *addr_ptr) {
     assert((size & 4095) == 0);
     if (!mem.use_page_table)
@@ -769,11 +784,30 @@ void add_external_mapping(MemState &mem, Address addr, uint32_t size, uint8_t *a
     note_transition(mem, recopied_any);
 
     std::atomic_thread_fence(std::memory_order_release);
-    for (uint32_t block = 0; block < size / KiB(4); block++)
+    bool pinned = false;
+    for (uint32_t block = 0; block < size / KiB(4); block++) {
+        if (!mem.arena_pins.empty() && is_arena_pinned(mem, static_cast<uint64_t>(addr) + block * KiB(4))) {
+            pinned = true;
+            continue;
+        }
         mem.page_table[addr / KiB(4) + block] = page_table_entry;
+    }
 
-    apply_host_protect(original_address, size, MemPerm::None, mem.host_page_size);
-    release_external_shadow_pages(original_address, size, mem.host_page_size);
+    if (!pinned) {
+        apply_host_protect(original_address, size, MemPerm::None, mem.host_page_size);
+        release_external_shadow_pages(original_address, size, mem.host_page_size);
+    } else {
+        uint32_t run_begin = 0;
+        for (uint32_t off = 0; off <= size; off += KiB(4)) {
+            if (off < size && !is_arena_pinned(mem, static_cast<uint64_t>(addr) + off))
+                continue;
+            if (off > run_begin) {
+                protect_host_pages_inside(original_address + run_begin, off - run_begin, MemPerm::None, mem.host_page_size);
+                release_external_shadow_pages(original_address + run_begin, off - run_begin, mem.host_page_size);
+            }
+            run_begin = off + KiB(4);
+        }
+    }
 
     const std::unique_lock<std::mutex> lock(mem.protect_mutex);
     const std::lock_guard<std::mutex> ext_lock(mem.external_mapping_mutex);
@@ -888,6 +922,52 @@ void remove_external_mapping(MemState &mem, uint8_t *addr_ptr, uint32_t size) {
         }
         flush_run();
         note_transition(mem, recopied_any);
+    }
+}
+
+void pin_to_arena(MemState &mem, Address addr, uint32_t size) {
+    if (!mem.use_page_table || size == 0)
+        return;
+    const uint64_t begin = align_down(static_cast<uint64_t>(addr), KiB(4));
+    const uint64_t end = align(static_cast<uint64_t>(addr) + size, KiB(4));
+    const std::unique_lock<std::shared_mutex> transition_lock(mem.external_transition_mutex);
+    mem.arena_pins.push_back({ addr, size });
+    for (uint64_t page = begin; page < end; page += KiB(4)) {
+        uint8_t *const entry = mem.page_table[page / KiB(4)];
+        if (entry == mem.memory.get())
+            continue;
+        uint8_t *const arena = &mem.memory[page];
+        apply_host_protect(arena, KiB(4), MemPerm::ReadWrite, mem.host_page_size);
+        memcpy(arena, entry + page, KiB(4));
+        verify_page(mem, arena, entry + page, "pin_to_arena", static_cast<Address>(page));
+        std::atomic_thread_fence(std::memory_order_release);
+        mem.page_table[page / KiB(4)] = mem.memory.get();
+    }
+}
+
+void unpin_from_arena(MemState &mem, Address addr) {
+    if (!mem.use_page_table)
+        return;
+    const std::unique_lock<std::shared_mutex> transition_lock(mem.external_transition_mutex);
+    const auto pin = std::find_if(mem.arena_pins.begin(), mem.arena_pins.end(), [addr](const MemArenaPin &p) { return p.address == addr; });
+    if (pin == mem.arena_pins.end())
+        return;
+    const uint64_t begin = align_down(static_cast<uint64_t>(pin->address), KiB(4));
+    const uint64_t end = align(static_cast<uint64_t>(pin->address) + pin->size, KiB(4));
+    mem.arena_pins.erase(pin);
+    const std::lock_guard<std::mutex> ext_lock(mem.external_mapping_mutex);
+    for (uint64_t page = begin; page < end; page += KiB(4)) {
+        if (mem.page_table[page / KiB(4)] != mem.memory.get() || is_arena_pinned(mem, page))
+            continue;
+        for (const auto &[host, mapping] : mem.external_mapping) {
+            if (mapping.address <= page && page < static_cast<uint64_t>(mapping.address) + mapping.size) {
+                uint8_t *const buffer = std::bit_cast<uint8_t *>(host);
+                memcpy(buffer + (page - mapping.address), &mem.memory[page], KiB(4));
+                std::atomic_thread_fence(std::memory_order_release);
+                mem.page_table[page / KiB(4)] = buffer - mapping.address;
+                break;
+            }
+        }
     }
 }
 

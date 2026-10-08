@@ -130,6 +130,7 @@ void VKState::wait_thread_function(const MemState &mem) {
                                // unlocking before a notify should be faster
                                lock.unlock();
                                state.notification_ready.notify_all();
+                               renderer::note_gpu_event();
                            }
                        },
                        [&](FrameDoneRequest &request) {

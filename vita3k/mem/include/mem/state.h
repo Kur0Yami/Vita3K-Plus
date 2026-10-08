@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <vector>
 
 struct AllocMemPage {
     uint32_t allocated : 4;
@@ -63,6 +64,11 @@ struct MemExternalMapping {
     uint32_t size;
 };
 
+struct MemArenaPin {
+    Address address;
+    uint32_t size;
+};
+
 struct MemState {
     std::mutex generation_mutex;
     std::mutex protect_mutex;
@@ -79,6 +85,7 @@ struct MemState {
 
     bool use_page_table = false;
     PageTable page_table;
+    std::vector<MemArenaPin> arena_pins;
     std::map<uint64_t, MemExternalMapping, std::greater<>> external_mapping;
     mutable std::mutex external_mapping_mutex;
     mutable std::shared_mutex external_transition_mutex;

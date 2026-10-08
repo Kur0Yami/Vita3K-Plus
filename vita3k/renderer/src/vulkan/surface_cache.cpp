@@ -2571,6 +2571,9 @@ bool VKSurfaceCache::check_for_surface(MemState &mem, Address source_address, Ca
     if (!state.features.enable_memory_mapping || state.disable_surface_sync)
         return false;
 
+    if (target_address)
+        note_cpu_write(target_address);
+
     if (vector_utils::find_index(cpu_surfaces_changed, source_address) != -1) {
         // there is a transfer operation pending on this surface, just add the callback after and we are done
         state.request_queue.push(CallbackRequest{ new CallbackRequestFunction(std::move(callback)) });
@@ -3308,6 +3311,15 @@ void VKSurfaceCache::destroy_associated_framebuffers(const VKRenderTarget *rende
     destroy_framebuffers(render_target->depthstencil.view);
 }
 
+void VKSurfaceCache::note_cpu_write(const Address address) {
+    auto it = color_address_lookup.upper_bound(address);
+    if (it == color_address_lookup.begin())
+        return;
+    ColorSurfaceCacheInfo &info = *std::prev(it)->second;
+    if (info.data.address() + info.total_bytes > address)
+        info.last_frame_cpu_written = static_cast<VKContext *>(state.context)->frame_timestamp;
+}
+
 vk::ImageView VKSurfaceCache::sourcing_color_surface_for_presentation(Ptr<const void> address, uint32_t pitch, Viewport &viewport, PresentSurfaceInfo *present_info) {
     // get closest surface with an address below address
     auto ite = color_address_lookup.upper_bound(address.address());
@@ -3319,6 +3331,10 @@ vk::ImageView VKSurfaceCache::sourcing_color_surface_for_presentation(Ptr<const 
     ColorSurfaceCacheInfo &info = *ite->second;
     if (info.data.address() + info.total_bytes <= address.address())
         // they do not overlap
+        return nullptr;
+
+    const uint64_t frame = static_cast<VKContext *>(state.context)->frame_timestamp;
+    if ((*info.dirty || info.last_frame_cpu_written > info.last_frame_rendered) && info.last_frame_rendered + 2 <= frame)
         return nullptr;
 
     if (info.stride_bytes == pitch * 4) {

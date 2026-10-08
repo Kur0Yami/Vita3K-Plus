@@ -1350,6 +1350,11 @@ static int destroy_gxm_context(EmuEnvState &emuenv, SceGxmContext *context, cons
         if (emuenv.gxm.last_immediate_context == immediate_context->second) {
             emuenv.gxm.last_immediate_context = 0;
         }
+        {
+            const std::lock_guard<std::mutex> lock(emuenv.gxm.open_scenes_mutex);
+            emuenv.gxm.open_scenes.erase(context);
+        }
+        emuenv.gxm.open_scenes_cond.notify_all();
         emuenv.gxm.immediate_contexts.erase(immediate_context);
     } else if (context->state.type == SCE_GXM_CONTEXT_TYPE_DEFERRED) {
         const auto deferred_context = emuenv.gxm.deferred_contexts.find(context);
@@ -1844,6 +1849,10 @@ EXPORT(int, sceGxmBeginScene, SceGxmContext *context, uint32_t flags, const SceG
     // It's legal to set at client.
     context->state.active = true;
     context->last_precomputed = false;
+    {
+        const std::lock_guard<std::mutex> lock(emuenv.gxm.open_scenes_mutex);
+        emuenv.gxm.open_scenes[context] = { thread_id, ++emuenv.gxm.open_scene_serial };
+    }
 
     // set all textures as dirty, in case their content is modified (even though I really don't think it would)
     // or some texture is the current framebuffer
@@ -2891,6 +2900,11 @@ EXPORT(int, sceGxmEndScene, SceGxmContext *context, SceGxmNotification *vertexNo
         emuenv.gxm.last_immediate_context = immediate_context->second;
 
     context->state.active = false;
+    {
+        const std::lock_guard<std::mutex> lock(emuenv.gxm.open_scenes_mutex);
+        emuenv.gxm.open_scenes.erase(context);
+    }
+    emuenv.gxm.open_scenes_cond.notify_all();
     return 0;
 }
 
@@ -6133,5 +6147,8 @@ EXPORT(Ptr<const SceGxmProgram>, sceGxmVertexProgramGetProgram, const SceGxmVert
 
 EXPORT(int, sceGxmWaitEvent) {
     TRACY_FUNC(sceGxmWaitEvent);
-    return UNIMPLEMENTED();
+    thread_local uint64_t seen = 0;
+    guest_sched_release_for_block();
+    seen = renderer::wait_gpu_event(seen, 5);
+    return 0;
 }

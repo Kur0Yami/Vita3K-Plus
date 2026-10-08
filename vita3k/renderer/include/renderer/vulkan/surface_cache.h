@@ -102,6 +102,7 @@ struct ColorSurfaceCacheInfo : public SurfaceCacheInfo {
     uint32_t stride_bytes;
     uint64_t last_frame_rendered;
     uint64_t last_scene_rendered = 0;
+    uint64_t last_frame_cpu_written = 0;
     uint64_t written_back_scene = 0;
     uint16_t rendered_w = 0;
     uint16_t rendered_h = 0;
@@ -395,6 +396,7 @@ public:
     void perform_pending_casts(VKContext &context, uint16_t vert_texture_count, uint16_t frag_texture_count);
     void flush_all_pending_casts();
     void refresh_casts_drawn_over(uint64_t scene_timestamp, int32_t x0, int32_t y0, int32_t x1, int32_t y1, bool exact_coordinates);
+    void note_cpu_write(Address address);
 
     void mark_current_surface_blended() {
         if (last_written_surface)
