@@ -931,18 +931,11 @@ void pin_to_arena(MemState &mem, Address addr, uint32_t size) {
     const uint64_t begin = align_down(static_cast<uint64_t>(addr), KiB(4));
     const uint64_t end = align(static_cast<uint64_t>(addr) + size, KiB(4));
     const std::unique_lock<std::shared_mutex> transition_lock(mem.external_transition_mutex);
-    mem.arena_pins.push_back({ addr, size });
     for (uint64_t page = begin; page < end; page += KiB(4)) {
-        uint8_t *const entry = mem.page_table[page / KiB(4)];
-        if (entry == mem.memory.get())
-            continue;
-        uint8_t *const arena = &mem.memory[page];
-        apply_host_protect(arena, KiB(4), MemPerm::ReadWrite, mem.host_page_size);
-        memcpy(arena, entry + page, KiB(4));
-        verify_page(mem, arena, entry + page, "pin_to_arena", static_cast<Address>(page));
-        std::atomic_thread_fence(std::memory_order_release);
-        mem.page_table[page / KiB(4)] = mem.memory.get();
+        if (mem.page_table[page / KiB(4)] != mem.memory.get())
+            return;
     }
+    mem.arena_pins.push_back({ addr, size });
 }
 
 void unpin_from_arena(MemState &mem, Address addr) {
