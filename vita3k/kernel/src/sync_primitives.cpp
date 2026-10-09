@@ -429,7 +429,8 @@ SceInt32 simple_event_setorpulse(KernelState &kernel, const char *export_name, S
 
             const std::lock_guard<std::mutex> waiting_thread_lock(waiting_thread->mutex);
 
-            waiting_thread->update_status(ThreadStatus::run, ThreadStatus::wait);
+            if (waiting_thread->status == ThreadStatus::wait)
+                waiting_thread->update_status(ThreadStatus::run, ThreadStatus::wait);
 
             event->waiting_threads->erase(it++);
         } else {
@@ -484,6 +485,154 @@ SceInt32 simple_event_delete(KernelState &kernel, const char *export_name, SceUI
     }
 
     return SCE_KERNEL_OK;
+}
+
+SceInt32 simple_event_wait_multiple(KernelState &kernel, const char *export_name, SceUID thread_id, const SceKernelWaitEvent *wait_list, SceUInt32 num_events, SceUInt32 wait_mode, SceKernelResultEvent *result_list, SceUInt32 *timeout, bool callbacks) {
+    constexpr SceUInt32 MAX_EVENTS = 64;
+    constexpr auto WAKE_RECHECK = std::chrono::microseconds(20000);
+    constexpr auto CALLBACK_POLL = std::chrono::microseconds(2000);
+
+    if (!wait_list)
+        return RET_ERROR(SCE_KERNEL_ERROR_ILLEGAL_ADDR);
+    if (num_events > MAX_EVENTS)
+        return RET_ERROR(SCE_KERNEL_ERROR_ILLEGAL_SIZE);
+    if (wait_mode & ~(SCE_KERNEL_EVENT_WAIT_MODE_OR | SCE_KERNEL_EVENT_WAIT_MODE_AND))
+        return RET_ERROR(SCE_KERNEL_ERROR_ILLEGAL_MODE);
+
+    const ThreadStatePtr thread = kernel.get_thread(thread_id);
+    if (!thread)
+        return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID);
+
+    struct Entry {
+        SimpleEventPtr event;
+        bool done = false;
+        bool queued = false;
+        SceUInt32 woken_pattern = 0;
+        SceUInt64 woken_user_data = 0;
+    };
+    std::vector<Entry> entries(num_events);
+    for (SceUInt32 i = 0; i < num_events; i++) {
+        entries[i].event = lock_and_find(wait_list[i].eventId, kernel.simple_events, kernel.mutex);
+        if (!entries[i].event && lock_and_find(wait_list[i].eventId, kernel.timers, kernel.mutex))
+            LOG_WARN_ONCE("{}: timer {} is not supported in a multiple event wait", export_name, log_hex(wait_list[i].eventId));
+    }
+
+    const bool wait_any = wait_mode & SCE_KERNEL_EVENT_WAIT_MODE_OR;
+    SceInt32 results = 0;
+    const auto record = [&](SceUInt32 i, SceInt32 result, SceUInt32 pattern, SceUInt64 user_data) {
+        entries[i].done = true;
+        if (result_list)
+            result_list[results++] = { wait_list[i].eventId, result, pattern, 0, user_data };
+    };
+    const auto take = [&](SceUInt32 i) {
+        SimpleEvent &event = *entries[i].event;
+        const SceUInt32 wait_pattern = wait_list[i].eventPattern;
+        if (!(event.pattern & wait_pattern))
+            return false;
+        record(i, SCE_KERNEL_OK, event.pattern & wait_pattern, event.last_user_data);
+        if (event.auto_reset)
+            event.pattern &= ~(wait_pattern & ~SCE_KERNEL_EVENT_DATA_EXIST);
+        return true;
+    };
+
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(timeout ? *timeout : 0);
+    const auto finish = [&](SceInt32 res) {
+        if (timeout) {
+            const auto left = std::chrono::duration_cast<std::chrono::microseconds>(deadline - std::chrono::steady_clock::now()).count();
+            *timeout = left > 0 ? static_cast<SceUInt32>(left) : 0;
+        }
+        return res;
+    };
+
+    while (true) {
+        if (callbacks)
+            process_callbacks(kernel, thread_id);
+
+        for (SceUInt32 i = 0; i < num_events; i++) {
+            if (entries[i].done)
+                continue;
+            if (!entries[i].event) {
+                record(i, SCE_KERNEL_ERROR_UNKNOWN_EVENT_ID, SCE_KERNEL_EVENT_ERROR, 0);
+                continue;
+            }
+            const std::lock_guard<std::mutex> event_lock(entries[i].event->mutex);
+            take(i);
+        }
+
+        const auto pending = static_cast<SceUInt32>(std::count_if(entries.begin(), entries.end(), [](const Entry &e) { return !e.done; }));
+        if (pending == 0 || (wait_any && pending < num_events) || thread->is_delete_requested())
+            return finish(results);
+        if (timeout && std::chrono::steady_clock::now() >= deadline)
+            return finish(RET_ERROR(SCE_KERNEL_ERROR_WAIT_TIMEOUT));
+
+        const auto first = std::find_if(entries.begin(), entries.end(), [](const Entry &e) { return !e.done; }) - entries.begin();
+        thread->set_wait_reason("event", wait_list[first].eventId, wait_list[first].eventPattern);
+        {
+            const std::lock_guard<std::mutex> thread_lock(thread->mutex);
+            thread->update_status(ThreadStatus::wait, ThreadStatus::run);
+        }
+
+        bool satisfied = false;
+        bool queued = false;
+        for (SceUInt32 i = 0; i < num_events && !(wait_any && satisfied); i++) {
+            Entry &entry = entries[i];
+            if (entry.done || std::any_of(entries.begin(), entries.begin() + i, [&](const Entry &e) { return e.queued && e.event == entry.event; }))
+                continue;
+            const std::lock_guard<std::mutex> event_lock(entry.event->mutex);
+            if (take(i)) {
+                satisfied = true;
+                continue;
+            }
+            WaitingThreadData data;
+            data.thread = thread;
+            data.priority = thread->priority;
+            data.was_canceled = nullptr;
+            data.pattern = static_cast<int32_t>(wait_list[i].eventPattern);
+            data.result_pattern = &entry.woken_pattern;
+            data.user_data = &entry.woken_user_data;
+            entry.event->waiting_threads->push(data);
+            entry.queued = true;
+            queued = true;
+        }
+
+        if (queued && !(wait_any && satisfied)) {
+            const bool poll_callbacks = callbacks && !thread->is_processing_callbacks;
+            std::vector<CallbackPtr> thread_callbacks;
+            if (poll_callbacks) {
+                const std::lock_guard<std::mutex> kernel_lock(kernel.mutex);
+                thread_callbacks = thread->callbacks;
+            }
+            std::unique_lock<std::mutex> thread_lock(thread->mutex);
+            while (thread->status != ThreadStatus::run) {
+                std::chrono::steady_clock::time_point until = std::chrono::steady_clock::now() + (poll_callbacks ? CALLBACK_POLL : WAKE_RECHECK);
+                if (timeout)
+                    until = std::min(until, deadline);
+                thread->status_cond.wait_until(thread_lock, until);
+                if (thread->status == ThreadStatus::run || (timeout && std::chrono::steady_clock::now() >= deadline))
+                    break;
+                if (poll_callbacks && callback_pending(thread_callbacks))
+                    break;
+            }
+        }
+
+        for (SceUInt32 i = 0; i < num_events; i++) {
+            Entry &entry = entries[i];
+            if (!entry.queued)
+                continue;
+            entry.queued = false;
+            const std::lock_guard<std::mutex> event_lock(entry.event->mutex);
+            const auto it = entry.event->waiting_threads->find(thread);
+            if (it != entry.event->waiting_threads->end())
+                entry.event->waiting_threads->erase(it);
+            else
+                record(i, SCE_KERNEL_OK, entry.woken_pattern & wait_list[i].eventPattern, entry.woken_user_data);
+        }
+        {
+            const std::lock_guard<std::mutex> thread_lock(thread->mutex);
+            if (thread->status == ThreadStatus::wait)
+                thread->update_status(ThreadStatus::run, ThreadStatus::wait);
+        }
+    }
 }
 
 // *********

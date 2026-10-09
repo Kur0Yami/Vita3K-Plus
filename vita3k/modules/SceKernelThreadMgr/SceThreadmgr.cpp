@@ -1359,9 +1359,35 @@ EXPORT(Ptr<void>, sceKernelGetThreadTLSAddr, SceUID thid, int key) {
     return emuenv.kernel.get_thread_tls_addr(emuenv.mem, thid, key);
 }
 
-EXPORT(int, sceKernelGetThreadmgrUIDClass) {
-    TRACY_FUNC(sceKernelGetThreadmgrUIDClass);
-    return UNIMPLEMENTED();
+EXPORT(int, sceKernelGetThreadmgrUIDClass, SceUID uid) {
+    TRACY_FUNC(sceKernelGetThreadmgrUIDClass, uid);
+    KernelState &kernel = emuenv.kernel;
+    const std::lock_guard<std::mutex> lock(kernel.mutex);
+    if (kernel.threads.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_THREAD;
+    if (kernel.semaphores.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_SEMA;
+    if (kernel.eventflags.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_EVENT_FLAG;
+    if (kernel.mutexes.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_MUTEX;
+    if (kernel.condvars.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_COND;
+    if (kernel.timers.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_TIMER;
+    if (kernel.msgpipes.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_MSG_PIPE;
+    if (kernel.callbacks.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_CALLBACK;
+    if (kernel.lwmutexes.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_LW_MUTEX;
+    if (kernel.lwcondvars.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_LW_COND;
+    if (kernel.rwlocks.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_RW_LOCK;
+    if (kernel.simple_events.contains(uid))
+        return SCE_KERNEL_THREADMGR_UID_CLASS_SIMPLE_EVENT;
+    return RET_ERROR(SCE_KERNEL_ERROR_INVALID_ARGUMENT);
 }
 
 EXPORT(uint64_t, sceKernelGetTimerBaseWide, SceUID timer_handle) {

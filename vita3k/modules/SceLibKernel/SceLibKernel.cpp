@@ -1894,14 +1894,14 @@ EXPORT(SceInt32, sceKernelWaitLwCondCB, Ptr<SceKernelLwCondWork> pWork, SceUInt3
     return CALL_EXPORT(_sceKernelWaitLwCondCB, pWork, pTimeout);
 }
 
-EXPORT(int, sceKernelWaitMultipleEvents) {
-    TRACY_FUNC(sceKernelWaitMultipleEvents);
-    return UNIMPLEMENTED();
+EXPORT(SceInt32, sceKernelWaitMultipleEvents, SceKernelWaitEvent *pWaitEventList, SceUInt32 numEvents, SceUInt32 waitMode, SceKernelResultEvent *pResultEventList, SceUInt32 *pTimeout) {
+    TRACY_FUNC(sceKernelWaitMultipleEvents, pWaitEventList, numEvents, waitMode, pResultEventList, pTimeout);
+    return simple_event_wait_multiple(emuenv.kernel, export_name, thread_id, pWaitEventList, numEvents, waitMode, pResultEventList, pTimeout, false);
 }
 
-EXPORT(int, sceKernelWaitMultipleEventsCB) {
-    TRACY_FUNC(sceKernelWaitMultipleEventsCB);
-    return UNIMPLEMENTED();
+EXPORT(SceInt32, sceKernelWaitMultipleEventsCB, SceKernelWaitEvent *pWaitEventList, SceUInt32 numEvents, SceUInt32 waitMode, SceKernelResultEvent *pResultEventList, SceUInt32 *pTimeout) {
+    TRACY_FUNC(sceKernelWaitMultipleEventsCB, pWaitEventList, numEvents, waitMode, pResultEventList, pTimeout);
+    return simple_event_wait_multiple(emuenv.kernel, export_name, thread_id, pWaitEventList, numEvents, waitMode, pResultEventList, pTimeout, true);
 }
 
 EXPORT(SceInt32, sceKernelWaitSema, SceUID semaId, SceInt32 needCount, SceUInt32 *pTimeout) {

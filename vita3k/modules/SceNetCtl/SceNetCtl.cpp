@@ -488,11 +488,11 @@ EXPORT(int, sceNetCtlCheckCallback) {
 
     const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
 
-    // TODO: Check if the network is connected
     if (emuenv.net.state != 1) {
+        const auto event = emuenv.cfg.current_config.psn_signed_in ? SCE_NET_CTL_EVENT_TYPE_IPOBTAINED : SCE_NET_CTL_EVENT_TYPE_DISCONNECTED;
         for (auto &callback : emuenv.netctl.callbacks) {
             if (callback.pc != 0) {
-                thread->run_callback(callback.pc, { SCE_NET_CTL_EVENT_TYPE_DISCONNECTED, callback.arg });
+                thread->run_callback(callback.pc, { static_cast<uint32_t>(event), callback.arg });
             }
         }
         emuenv.net.state = 1;

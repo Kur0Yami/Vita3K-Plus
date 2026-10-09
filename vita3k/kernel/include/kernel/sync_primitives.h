@@ -226,6 +226,7 @@ SceInt32 simple_event_waitorpoll(KernelState &kernel, const char *export_name, S
 SceInt32 simple_event_setorpulse(KernelState &kernel, const char *export_name, SceUID thread_id, SceUID event_id, SceUInt32 pattern, SceUInt64 user_data, bool is_set);
 SceInt32 simple_event_clear(KernelState &kernel, const char *export_name, SceUID thread_id, SceUID event_id, SceUInt32 clear_pattern);
 SceInt32 simple_event_delete(KernelState &kernel, const char *export_name, SceUID thread_id, SceUID event_id);
+SceInt32 simple_event_wait_multiple(KernelState &kernel, const char *export_name, SceUID thread_id, const SceKernelWaitEvent *wait_list, SceUInt32 num_events, SceUInt32 wait_mode, SceKernelResultEvent *result_list, SceUInt32 *timeout, bool callbacks);
 
 // Timer
 SceUID timer_create(KernelState &kernel, MemState &mem, const char *export_name, const char *name, SceUID thread_id, SceUInt32 attr);
