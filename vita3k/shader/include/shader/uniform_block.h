@@ -128,10 +128,10 @@ struct UniformBlockExtended {
         }
     }
 
-    void set_cast_sampler_bit(int idx, bool is_cast, bool phase_hi) {
+    void set_cast_sampler_bit(int idx, bool is_cast, bool phase_hi, bool phase_view) {
         const uint16_t bit = uint16_t(1u << idx);
         const uint16_t new_bits = is_cast ? (cast_sampler_bits | bit) : (cast_sampler_bits & ~bit);
-        const uint16_t new_phase = (is_cast && phase_hi) ? (cast_phase_bits | bit) : (cast_phase_bits & ~bit);
+        const uint16_t new_phase = ((is_cast && phase_hi) || phase_view) ? (cast_phase_bits | bit) : (cast_phase_bits & ~bit);
         if (new_bits != cast_sampler_bits || new_phase != cast_phase_bits) {
             changed = true;
             cast_sampler_bits = new_bits;

@@ -663,7 +663,7 @@ void draw(VKContext &context, SceGxmPrimitiveType type, SceGxmIndexFormat format
     frag_ublock.raw_cast_mask = static_cast<float>(context.curr_frag_ublock.raw_cast_bits);
     frag_ublock.inv_frag_width = 1.0f / static_cast<float>(context.render_target->width);
     frag_ublock.inv_frag_height = 1.0f / static_cast<float>(context.render_target->height);
-    if (context.curr_frag_ublock.cast_sampler_bits != 0) {
+    if (context.curr_frag_ublock.cast_sampler_bits != 0 || context.curr_frag_ublock.cast_phase_bits != 0) {
         static uint64_t reanchor_log_n = 0;
         if (reanchor_log_n < 16 || (reanchor_log_n % 512) == 0)
             LOG_INFO("UV re-anchor: mask=0x{:X} phase=0x{:X} rt={}x{} res_mult={} surface_orig={}x{}",

@@ -1714,7 +1714,7 @@ vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiv
     key ^= variant_bits;
     raw_key ^= variant_bits;
 
-    const uint32_t cast_units = context.curr_frag_ublock.cast_sampler_bits | context.curr_frag_ublock.raw_cast_bits;
+    const uint32_t cast_units = context.curr_frag_ublock.cast_sampler_bits | context.curr_frag_ublock.cast_phase_bits | context.curr_frag_ublock.raw_cast_bits;
     const bool has_casts = (cast_units & fragment_program_binding->fragment_program->textures_used.to_ulong()) != 0;
     if (has_casts) {
         key ^= 0xC2B2AE3D27D4EB4Full;
