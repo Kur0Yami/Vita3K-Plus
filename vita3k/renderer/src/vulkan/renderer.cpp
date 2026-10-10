@@ -722,6 +722,7 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
         bool support_buffer_device_address = false;
         bool support_external_memory = false;
         bool support_shader_interlock = false;
+        bool support_float_controls = false;
         const std::map<std::string_view, bool *> optional_extensions = {
             { vk::KHRGetMemoryRequirements2ExtensionName, &temp_bool },
             // can be used by vma to improve performance
@@ -767,6 +768,7 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
         for (const vk::ExtensionProperties &ext : physical_device.enumerateDeviceExtensionProperties()) {
             available_extension_count++;
             available_extensions += (available_extensions.empty() ? "" : ", ") + std::string(ext.extensionName.data());
+            support_float_controls |= std::string_view(ext.extensionName.data()) == vk::KHRShaderFloatControlsExtensionName;
             auto it = optional_extensions.find(ext.extensionName.data());
             if (it != optional_extensions.end()) {
                 // this extension is available on the GPU
@@ -900,6 +902,14 @@ bool VKState::create(std::unique_ptr<renderer::State> &state, const Config &conf
 
         constexpr bool raw_preserve_needs_interlock = false;
         features.preserve_f16_nan_as_u16 = static_cast<bool>(physical_device_features.independentBlend) && (!raw_preserve_needs_interlock || features.support_shader_interlock);
+
+        // Adreno 6xx and 7xx flush fp16 denormals in packHalf2x16 which zeroes small F16 constants such as Scaleform texgen scales
+        bool preserves_f16_denormals = false;
+        if ((physical_device_properties.apiVersion >= VK_API_VERSION_1_2 || support_float_controls) && VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceProperties2KHR) {
+            const auto float_controls = physical_device.getProperties2KHR<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceFloatControlsProperties>();
+            preserves_f16_denormals = static_cast<bool>(float_controls.get<vk::PhysicalDeviceFloatControlsProperties>().shaderDenormPreserveFloat16);
+        }
+        features.emulate_f16_denormals = !preserves_f16_denormals;
 
         // depth clamp turns off z-clipping, so behind-the-eye primitives must be clipped in the shader instead
         features.support_clip_distance = enable_depth_clamp && static_cast<bool>(physical_device_features.depthClamp) && static_cast<bool>(physical_device_features.shaderClipDistance);
@@ -1240,8 +1250,8 @@ void VKState::log_gpu_configuration(const Config &cfg) {
     LOG_INFO("  FeatureState: use_mask_bit={} support_unknown_format={} support_rgb_attributes={} support_scaled_attribute_formats={}",
         features.use_mask_bit, features.support_unknown_format, features.support_rgb_attributes,
         features.support_scaled_attribute_formats);
-    LOG_INFO("  FeatureState: enable_memory_mapping={} use_texture_viewport={} spirv_shader={} features_mask=0x{:X}",
-        features.enable_memory_mapping, features.use_texture_viewport, features.spirv_shader, get_features_mask());
+    LOG_INFO("  FeatureState: enable_memory_mapping={} use_texture_viewport={} spirv_shader={} emulate_f16_denormals={} features_mask=0x{:X}",
+        features.enable_memory_mapping, features.use_texture_viewport, features.spirv_shader, features.emulate_f16_denormals, get_features_mask());
     LOG_INFO("  derived: should_use_shader_interlock={} should_use_texture_barrier={} programmable_blending={}",
         features.should_use_shader_interlock(), features.should_use_texture_barrier(),
         features.is_programmable_blending_supported());
@@ -1586,6 +1596,7 @@ uint32_t VKState::get_features_mask() {
             bool use_clip_distance : 1;
             bool use_gxm_clip_planes : 1;
             bool force_full_precision : 1;
+            bool emulate_f16_denormals : 1;
         };
         uint32_t value;
     } features_mask;
@@ -1605,6 +1616,7 @@ uint32_t VKState::get_features_mask() {
     features_mask.use_clip_distance = features.support_clip_distance;
     features_mask.use_gxm_clip_planes = features.support_gxm_clip_planes;
     features_mask.force_full_precision = features.force_full_precision;
+    features_mask.emulate_f16_denormals = features.emulate_f16_denormals;
 
     return features_mask.value;
 }

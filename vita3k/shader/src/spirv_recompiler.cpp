@@ -2669,6 +2669,22 @@ void convert_gxp_to_glsl_from_filepath(const std::string &shader_filepath_utf8) 
         }
     }
 
+    FeatureState f16dn_features = vk_features;
+    f16dn_features.emulate_f16_denormals = true;
+    for (const bool mapped : { true, false }) {
+        f16dn_features.enable_memory_mapping = mapped;
+        const GeneratedShader f16dn = convert_gxp(gxp, shader_filepath_str.filename().string(), f16dn_features, shader::Target::SpirVVulkan, hints, false, false);
+        if (f16dn.spirv.empty())
+            continue;
+        fs::path f16dn_path = shader_filepath_str;
+        f16dn_path.replace_extension(mapped ? ".vk.f16dn.spv" : ".vk.nomap.f16dn.spv");
+        fs::ofstream f16dn_file(f16dn_path, std::ios::binary);
+        if (f16dn_file) {
+            f16dn_file.write(reinterpret_cast<const char *>(f16dn.spirv.data()), static_cast<std::streamsize>(f16dn.spirv.size() * sizeof(uint32_t)));
+            LOG_INFO("Wrote the fp16-denormal variant to {} ({} words)", f16dn_path.string(), f16dn.spirv.size());
+        }
+    }
+
     if (gxp.is_fragment()) {
         const std::pair<SceGxmOutputRegisterFormat, const char *> variants[] = {
             { SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4, ".vk.u8.spv" },

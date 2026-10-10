@@ -473,7 +473,7 @@ static spv::Function *make_f16_unpack_func(spv::Builder &b, const SpirvUtilFunct
     return f16_unpack_func;
 }
 
-static spv::Function *make_f16_pack_func(spv::Builder &b, const SpirvUtilFunctions &utils, const FeatureState &features) {
+static spv::Function *make_f16_pack_func(spv::Builder &b, const SpirvUtilFunctions &utils, const FeatureState &features, const bool keep_denormals) {
     std::vector<std::vector<spv::Decoration>> decorations;
 
     spv::Block *f16_pack_func_block;
@@ -483,12 +483,14 @@ static spv::Function *make_f16_pack_func(spv::Builder &b, const SpirvUtilFunctio
     spv::Id type_f32 = b.makeFloatType(32);
     spv::Id type_f32_v2 = b.makeVectorType(type_f32, 2);
 
+    const char *const name = keep_denormals ? "pack2xF16KeepDenormals" : "pack2xF16";
     spv::Function *f16_pack_func = b.makeFunctionEntry(
-        spv::NoPrecision, type_f32, "pack2xF16", spv::LinkageTypeMax, { type_f32_v2 },
+        spv::NoPrecision, type_f32, name, spv::LinkageTypeMax, { type_f32_v2 },
         decorations, &f16_pack_func_block);
-    b.setupFunctionDebugInfo(f16_pack_func, "pack2xF16", { type_f32_v2 }, { "to_pack" });
+    b.setupFunctionDebugInfo(f16_pack_func, name, { type_f32_v2 }, { "to_pack" });
 
-    f16_pack_func->addParamPrecision(0, spv::DecorationRelaxedPrecision);
+    if (!keep_denormals)
+        f16_pack_func->addParamPrecision(0, spv::DecorationRelaxedPrecision);
     spv::Id extracted = f16_pack_func->getParamId(0);
 
     // saturate rather than overflow to Inf
@@ -500,8 +502,34 @@ static spv::Function *make_f16_pack_func(spv::Builder &b, const SpirvUtilFunctio
     extracted = b.createTriOp(spv::OpSelect, type_f32_v2, is_nan, extracted, saturated);
 
     // use packHalf2x16
-    extracted = b.createBuiltinCall(type_ui32, utils.std_builtins, GLSLstd450PackHalf2x16, { extracted });
-    extracted = b.createUnaryOp(spv::OpBitcast, type_f32, extracted);
+    spv::Id packed = b.createBuiltinCall(type_ui32, utils.std_builtins, GLSLstd450PackHalf2x16, { extracted });
+
+    if (keep_denormals) {
+        // packHalf2x16 flushes halves below 2^-14 to zero here, so build those as sign | roundEven(|x| * 2^24) in fp32
+        const spv::Id type_ui32_v2 = b.makeVectorType(type_ui32, 2);
+        const spv::Id type_bool = b.makeBoolType();
+        const spv::Id min_normal = b.makeFloatConstant(6.103515625e-05f);
+        const spv::Id min_normal_v2 = b.makeCompositeConstant(type_f32_v2, { min_normal, min_normal });
+        const spv::Id magnitude = b.createBuiltinCall(type_f32_v2, utils.std_builtins, GLSLstd450FAbs, { extracted });
+        const spv::Id is_subnormal = b.createBinOp(spv::OpFOrdLessThan, b.makeVectorType(type_bool, 2), magnitude, min_normal_v2);
+        const spv::Id two_pow_24 = b.makeFloatConstant(16777216.0f);
+        spv::Id subnormal = b.createBuiltinCall(type_f32_v2, utils.std_builtins, GLSLstd450FMin, { magnitude, min_normal_v2 });
+        subnormal = b.createBinOp(spv::OpFMul, type_f32_v2, subnormal, b.makeCompositeConstant(type_f32_v2, { two_pow_24, two_pow_24 }));
+        subnormal = b.createBuiltinCall(type_f32_v2, utils.std_builtins, GLSLstd450RoundEven, { subnormal });
+        subnormal = b.createUnaryOp(spv::OpConvertFToU, type_ui32_v2, subnormal);
+        spv::Id sign = b.createUnaryOp(spv::OpBitcast, type_ui32_v2, extracted);
+        sign = b.createBinOp(spv::OpShiftRightLogical, type_ui32_v2, sign, b.makeCompositeConstant(type_ui32_v2, { b.makeUintConstant(16), b.makeUintConstant(16) }));
+        sign = b.createBinOp(spv::OpBitwiseAnd, type_ui32_v2, sign, b.makeCompositeConstant(type_ui32_v2, { b.makeUintConstant(0x8000), b.makeUintConstant(0x8000) }));
+        subnormal = b.createBinOp(spv::OpBitwiseOr, type_ui32_v2, subnormal, sign);
+
+        const spv::Id low = b.createTriOp(spv::OpSelect, type_ui32, b.createCompositeExtract(is_subnormal, type_bool, 0),
+            b.createCompositeExtract(subnormal, type_ui32, 0), b.createBinOp(spv::OpBitwiseAnd, type_ui32, packed, b.makeUintConstant(0xFFFF)));
+        const spv::Id high = b.createTriOp(spv::OpSelect, type_ui32, b.createCompositeExtract(is_subnormal, type_bool, 1),
+            b.createCompositeExtract(subnormal, type_ui32, 1), b.createBinOp(spv::OpShiftRightLogical, type_ui32, packed, b.makeUintConstant(16)));
+        packed = b.createBinOp(spv::OpBitwiseOr, type_ui32, low, b.createBinOp(spv::OpShiftLeftLogical, type_ui32, high, b.makeUintConstant(16)));
+    }
+
+    extracted = b.createUnaryOp(spv::OpBitcast, type_f32, packed);
 
     b.makeReturn(false, extracted);
     b.setBuildPoint(last_build_point);
@@ -840,9 +868,14 @@ spv::Id pack_one(spv::Builder &b, SpirvUtilFunctions &utils, const FeatureState 
         return b.createFunctionCall(utils.pack_fx10, { vec });
     }
     case DataType::F16: {
+        if (utils.keep_f16_denormals) {
+            if (!utils.pack_f16_keep_denormals)
+                utils.pack_f16_keep_denormals = make_f16_pack_func(b, utils, features, true);
+            return b.createFunctionCall(utils.pack_f16_keep_denormals, { vec });
+        }
         auto iter = utils.pack_funcs.find(source_type);
         if (iter == utils.pack_funcs.end()) {
-            iter = utils.pack_funcs.emplace(source_type, make_f16_pack_func(b, utils, features)).first;
+            iter = utils.pack_funcs.emplace(source_type, make_f16_pack_func(b, utils, features, false)).first;
         }
         return b.createFunctionCall(iter->second, { vec });
     }

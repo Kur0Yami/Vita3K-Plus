@@ -32,6 +32,8 @@ struct SpirvUtilFunctions {
     spv::Function *fetch_memory{ nullptr };
     spv::Function *unpack_fx10{ nullptr };
     spv::Function *pack_fx10{ nullptr };
+    spv::Function *pack_f16_keep_denormals{ nullptr };
+    bool keep_f16_denormals = false; // set while a VPCK stores F16 on a GPU that flushes fp16 denormals
 
     // buffer_address_vec[i][1] contains the buffer pointer with an array of vec_i and stride 16 bytes
     // 0 in the last index is for the read buffer, 1 is for the write buffer
