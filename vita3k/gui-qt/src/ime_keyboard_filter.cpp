@@ -157,8 +157,7 @@ bool ImeKeyboardFilter::eventFilter(QObject *watched, QEvent *event) {
     }
 
     case QEvent::KeyRelease:
-        // block key releases when ime active
-        return true;
+        return QObject::eventFilter(watched, event);
 
     default:
         break;
