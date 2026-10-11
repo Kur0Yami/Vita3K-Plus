@@ -20,6 +20,8 @@
 #include <SDL3/SDL_audio.h>
 #include <SDL3/SDL_hints.h>
 
+#include <algorithm>
+
 #define SDL_CHECK_EXT(condition, ret)                         \
     do {                                                      \
         if (!(condition)) {                                   \
@@ -32,18 +34,21 @@
 #define SDL_CHECK_VOID(f_call) SDL_CHECK_EXT(f_call, )
 #define SDL_CHECK_NEG(f_call) SDL_CHECK_EXT((f_call) >= 0, {})
 
-static int get_threshold_samples(const int device_buffer_samples) {
-    return 4 * device_buffer_samples;
+// SDL pulls whole device buffers, so keep enough queued that a pull still leaves two behind it
+static int get_threshold_samples(const int device_buffer_samples, const int device_freq) {
+    return std::max(3 * device_buffer_samples, AUDIO_MIN_QUEUE_MS * device_freq / 1000);
 }
 
 void SDLCALL SDLAudioAdapter::thread_wakeup_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
     assert(userdata != nullptr);
     assert(stream != nullptr);
     SDLAudioOutPort *port = static_cast<SDLAudioOutPort *>(userdata);
-    const int samples_available = port->adapter.get_rest_sample(*port);
-    if (samples_available < get_threshold_samples(port->adapter.device_buffer_samples) || additional_amount > 0) {
-        port->cond_var.notify_one();
+    // every pull takes data out of the stream: let the producer re-check the queue now rather than at its timeout
+    port->pull_seq.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(port->mutex);
     }
+    port->cond_var.notify_one();
 }
 
 SDLAudioAdapter::SDLAudioAdapter(AudioState &audio_state)
@@ -56,11 +61,23 @@ SDLAudioAdapter::~SDLAudioAdapter() {
 }
 
 bool SDLAudioAdapter::init() {
+#ifdef __ANDROID__
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "1024");
+    SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, "0");
+    // SDL's AAudio device advertises its 44.1 kHz default, so ask for the Vita's 48 kHz explicitly
+    const SDL_AudioSpec spec = {
+        .format = SDL_AUDIO_S16LE,
+        .channels = 2,
+        .freq = 48000
+    };
+    device_id = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec);
+#else
     // SDL3 default is 1024 sample frames for 48kHz audio, which is higher than cubeb.
     // Request smaller device buffer for lower latency callbacks.
     // 512 sample frames = 2048 bytes for stereo 16-bit, matching cubeb's callback size.
     SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "512");
     device_id = SDL_OpenAudioDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, nullptr);
+#endif
     SDL_CHECK_EXT(device_id > 0, false);
     return true;
 }
@@ -97,12 +114,13 @@ void SDLAudioAdapter::audio_output(AudioOutPort &out_port, const void *buffer) {
 
     //  Put audio to the port's stream and see how much is left to play.
     SDLAudioOutPort &port = static_cast<SDLAudioOutPort &>(out_port);
-    // If there's lots of audio left to play, stop this thread.
-    // The audio callback will wake it up later when it's running out of data.
+    const uint32_t seen_pulls = port.pull_seq.load(std::memory_order_relaxed);
     const int samples_available = get_rest_sample(port);
-    if (samples_available > get_threshold_samples(device_buffer_samples)) {
+    if (samples_available > get_threshold_samples(device_buffer_samples, dst_spec.freq)) {
         std::unique_lock<std::mutex> lock(port.mutex);
-        port.cond_var.wait_for(lock, std::chrono::microseconds(port.len_microseconds * 2));
+        port.cond_var.wait_for(lock, std::chrono::microseconds(port.len_microseconds * 2), [&] {
+            return port.pull_seq.load(std::memory_order_relaxed) != seen_pulls || out_port.stopping;
+        });
         if (out_port.stopping)
             return;
     }

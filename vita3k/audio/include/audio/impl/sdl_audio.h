@@ -50,6 +50,7 @@ struct SDLAudioOutPort : public AudioOutPort {
     SDLAudioAdapter &adapter;
     std::mutex mutex;
     std::condition_variable cond_var;
+    std::atomic<uint32_t> pull_seq{ 0 };
     SDLAudioOutPort(AudioStreamPtr stream, AudioAdapter &adapter)
         : stream(std::move(stream))
         , adapter(dynamic_cast<SDLAudioAdapter &>(adapter)) {}

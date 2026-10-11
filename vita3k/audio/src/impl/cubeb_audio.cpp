@@ -18,6 +18,9 @@
 #include "audio/impl/cubeb_audio.h"
 #include "util/log.h"
 
+#include <algorithm>
+#include <cstring>
+
 static long impl_cubeb_audio_callback(cubeb_stream *stream, void *user_data, const void *input, void *output, long nframes) {
     assert(user_data != nullptr);
     assert(stream != nullptr);
@@ -50,6 +53,10 @@ static long impl_cubeb_audio_callback(cubeb_stream *stream, void *user_data, con
 
         bytes_given += bytes_to_copy;
     }
+
+    // ran dry so play silence instead of whatever the device buffer held before
+    if (bytes_given < bytes_to_give)
+        memset(&output_buffer[bytes_given], 0, bytes_to_give - bytes_given);
 
     return nframes;
 }
@@ -106,8 +113,10 @@ AudioOutPortPtr CubebAudioAdapter::open_port(int nb_channels, int freq, int nb_s
 
     port->len_bytes = nb_sample * nb_channels * sizeof(uint16_t);
 
-    // allocate enough buffers to be able to satisfy a callback (+1 to make sure one buffer can be ready)
-    const int nb_buffers = (latency + nb_sample - 1) / nb_sample + 1;
+    // allocate enough buffers to satisfy a callback and to hold AUDIO_MIN_QUEUE_MS (+1 to make sure one buffer can be ready)
+    const uint32_t sample_count = static_cast<uint32_t>(nb_sample);
+    const uint32_t min_queue_frames = static_cast<uint32_t>(freq) * AUDIO_MIN_QUEUE_MS / 1000;
+    const int nb_buffers = static_cast<int>(std::max((latency + sample_count - 1) / sample_count, (min_queue_frames + sample_count - 1) / sample_count)) + 1;
     port->audio_buffers.resize(nb_buffers);
     for (AudioBuffer &audio_buffer : port->audio_buffers) {
         // initialize all the buffers
