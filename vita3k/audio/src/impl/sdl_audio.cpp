@@ -21,6 +21,7 @@
 #include <SDL3/SDL_hints.h>
 
 #include <algorithm>
+#include <chrono>
 
 #define SDL_CHECK_EXT(condition, ret)                         \
     do {                                                      \
@@ -39,12 +40,20 @@ static int get_threshold_samples(const int device_buffer_samples, const int devi
     return std::max(3 * device_buffer_samples, AUDIO_MIN_QUEUE_MS * device_freq / 1000);
 }
 
+static uint64_t steady_now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 void SDLCALL SDLAudioAdapter::thread_wakeup_callback(void *userdata, SDL_AudioStream *stream, int additional_amount, int total_amount) {
     assert(userdata != nullptr);
     assert(stream != nullptr);
     SDLAudioOutPort *port = static_cast<SDLAudioOutPort *>(userdata);
+    const uint64_t now_us = steady_now_us();
+    const uint64_t pull_us = static_cast<uint64_t>(port->adapter.device_buffer_samples) * 1000000 / std::max(port->adapter.dst_spec.freq, 1);
+    const uint64_t play_end = std::max(port->play_end_us.load(std::memory_order_relaxed), now_us) + pull_us;
+    port->play_end_us.store(std::min(play_end, now_us + 2 * pull_us), std::memory_order_relaxed);
     // every pull takes data out of the stream: let the producer re-check the queue now rather than at its timeout
-    port->pull_seq.fetch_add(1, std::memory_order_relaxed);
+    port->pull_seq.fetch_add(1, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lock(port->mutex);
     }
@@ -114,11 +123,21 @@ void SDLAudioAdapter::audio_output(AudioOutPort &out_port, const void *buffer) {
 
     //  Put audio to the port's stream and see how much is left to play.
     SDLAudioOutPort &port = static_cast<SDLAudioOutPort &>(out_port);
-    const uint32_t seen_pulls = port.pull_seq.load(std::memory_order_relaxed);
-    const int samples_available = get_rest_sample(port);
-    if (samples_available > get_threshold_samples(device_buffer_samples, dst_spec.freq)) {
+    const int threshold = get_threshold_samples(device_buffer_samples, dst_spec.freq);
+    const uint64_t deadline = steady_now_us() + port.len_microseconds * 2;
+    for (;;) {
+        const uint32_t seen_pulls = port.pull_seq.load(std::memory_order_acquire);
+        const int queued = get_rest_sample(port);
+        const uint64_t now = steady_now_us();
+        const uint64_t play_end = port.play_end_us.load(std::memory_order_relaxed);
+        const int unplayed = (play_end > now && dst_spec.freq > 0) ? static_cast<int>((play_end - now) * dst_spec.freq / 1000000) : 0;
+        if (queued + unplayed <= threshold || now >= deadline)
+            break;
+        uint64_t wait_us = deadline - now;
+        if (queued <= threshold)
+            wait_us = std::min<uint64_t>(wait_us, static_cast<uint64_t>(queued + unplayed - threshold) * 1000000 / dst_spec.freq + 1);
         std::unique_lock<std::mutex> lock(port.mutex);
-        port.cond_var.wait_for(lock, std::chrono::microseconds(port.len_microseconds * 2), [&] {
+        port.cond_var.wait_for(lock, std::chrono::microseconds(wait_us), [&] {
             return port.pull_seq.load(std::memory_order_relaxed) != seen_pulls || out_port.stopping;
         });
         if (out_port.stopping)
@@ -135,8 +154,11 @@ int SDLAudioAdapter::get_rest_sample(AudioOutPort &out_port) {
     auto &port = static_cast<SDLAudioOutPort &>(out_port);
     const int bytes_available = SDL_GetAudioStreamAvailable(port.stream.get());
     SDL_CHECK_NEG(bytes_available);
-    // we have the number of bytes left, we can convert it back to the number of samples left
-    return bytes_available / SDL_AUDIO_FRAMESIZE(dst_spec);
+    SDL_AudioSpec out_spec;
+    if (!SDL_GetAudioStreamFormat(port.stream.get(), nullptr, &out_spec))
+        out_spec = dst_spec;
+    const int frame_size = SDL_AUDIO_FRAMESIZE(out_spec);
+    return frame_size > 0 ? bytes_available / frame_size : 0;
 }
 
 void SDLAudioAdapter::wake_all_ports() {
