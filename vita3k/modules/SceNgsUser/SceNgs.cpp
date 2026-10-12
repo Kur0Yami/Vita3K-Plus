@@ -931,6 +931,7 @@ EXPORT(int, sceNgsVoiceKill, ngs::Voice *voice) {
         return RET_ERROR(SCE_NGS_ERROR_INVALID_ARG);
     }
 
+    voice->rack->system->voice_scheduler.cancel_finished_callback(voice);
     voice->rack->system->voice_scheduler.stop(emuenv.mem, voice);
 
     return 0;

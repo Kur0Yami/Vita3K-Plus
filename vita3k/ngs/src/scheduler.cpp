@@ -140,6 +140,17 @@ bool VoiceScheduler::off(const MemState &mem, Voice *voice) {
     return true;
 }
 
+void VoiceScheduler::cancel_finished_callback(Voice *voice) {
+    const std::lock_guard<std::recursive_mutex> guard(mutex);
+    std::queue<OperationPending> kept;
+    for (; !operations_pending.empty(); operations_pending.pop()) {
+        const OperationPending &op = operations_pending.front();
+        if (op.type != PendingType::VoiceFinished || op.finished_data.voice != voice)
+            kept.push(op);
+    }
+    operations_pending.swap(kept);
+}
+
 void VoiceScheduler::update(KernelState &kern, MemState &mem, const SceUID thread_id) {
     std::unique_lock<std::recursive_mutex> scheduler_lock(mutex);
     is_updating = true;

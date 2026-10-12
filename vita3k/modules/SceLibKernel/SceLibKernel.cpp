@@ -1235,6 +1235,8 @@ EXPORT(int, sceKernelCreateLwMutex, Ptr<SceKernelLwMutexWork> workarea, const ch
 
 EXPORT(int, sceKernelCreateMsgPipe, const char *name, uint32_t type, uint32_t attr, SceSize bufSize, const SceKernelCreateMsgPipeOpt *opt) {
     TRACY_FUNC(sceKernelCreateMsgPipe, name, type, attr, bufSize, opt);
+    if (type != SCE_KERNEL_MSG_PIPE_TYPE_USER_MAIN && type != SCE_KERNEL_MSG_PIPE_TYPE_USER_CDRAM)
+        return kernel_refuse(export_name, "message pipe type", SCE_KERNEL_ERROR_ILLEGAL_TYPE);
     return msgpipe_create(emuenv.kernel, export_name, name, thread_id, attr, bufSize);
 }
 
@@ -1786,12 +1788,10 @@ EXPORT(int, sceKernelTryLockLwMutex_16XX, Ptr<SceKernelLwMutexWork> workarea, in
 EXPORT(int, sceKernelTryReceiveMsgPipe, SceUID msgpipe_id, char *recv_buf, SceSize msg_size, SceUInt32 wait_mode, SceSize *result) {
     TRACY_FUNC(sceKernelTryReceiveMsgPipe, msgpipe_id, recv_buf, msg_size, wait_mode, result);
     const auto ret = msgpipe_recv(emuenv.kernel, export_name, thread_id, msgpipe_id, wait_mode | SCE_KERNEL_MSG_PIPE_MODE_DONT_WAIT, recv_buf, msg_size, 0);
-    if (ret == 0) {
-        return SCE_KERNEL_ERROR_MPP_EMPTY;
-    }
-    if (result) {
-        *result = ret;
-    }
+    if (result)
+        *result = static_cast<int>(ret) < 0 ? 0 : ret;
+    if (static_cast<int>(ret) < 0)
+        return ret;
     return SCE_KERNEL_OK;
 }
 
@@ -1802,18 +1802,14 @@ EXPORT(int, sceKernelTryReceiveMsgPipeVector) {
 
 EXPORT(int, sceKernelTrySendMsgPipe, SceUID msgPipeId, const void *pSendBuf, SceSize sendSize, SceUInt32 waitMode, SceSize *pResult) {
     TRACY_FUNC(sceKernelTrySendMsgPipe, msgPipeId, pSendBuf, sendSize, waitMode, pResult);
-    STUBBED("");
     waitMode |= SCE_KERNEL_MSG_PIPE_MODE_DONT_WAIT;
     SceUInt32 pTimeout = 0;
     const auto ret = msgpipe_send(emuenv.kernel, export_name, thread_id, msgPipeId, waitMode, pSendBuf, sendSize, &pTimeout);
-    if (static_cast<int>(ret) < 0) {
+    if (pResult)
+        *pResult = static_cast<int>(ret) < 0 ? 0 : ret;
+    if (static_cast<int>(ret) < 0)
         return ret;
-    }
-    if (pResult) {
-        *pResult = ret;
-    }
     return SCE_KERNEL_OK;
-    // return UNIMPLEMENTED();
 }
 
 EXPORT(int, sceKernelTrySendMsgPipeVector) {

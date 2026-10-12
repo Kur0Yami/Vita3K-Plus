@@ -78,7 +78,12 @@ EXPORT(int, ksceKernelCreateMsgPipe) {
 
 EXPORT(int, ksceKernelCreateMutex, const char *name, SceUInt attr, int init_count, SceKernelMutexOptParam *opt_param) {
     TRACY_FUNC(ksceKernelCreateMutex, name, attr, init_count, opt_param);
-    return CALL_EXPORT(_sceKernelCreateMutex, name, attr, init_count, opt_param);
+    constexpr SceUInt KERNEL_ONLY_ATTR = 0x8000;
+    if (attr & ~(SCE_KERNEL_MUTEX_ATTR_RECURSIVE | SCE_KERNEL_MUTEX_ATTR_CEILING | SCE_KERNEL_ATTR_TH_PRIO | SCE_KERNEL_ATTR_OPENABLE | KERNEL_ONLY_ATTR))
+        return kernel_refuse(export_name, "kernel mutex attribute", SCE_KERNEL_ERROR_ILLEGAL_ATTR);
+    const int res = CALL_EXPORT(_sceKernelCreateMutex, name, attr & ~KERNEL_ONLY_ATTR, init_count, opt_param);
+    LOG_INFO("[KMUTEX] {}: '{}' attr {} init {} - returned {}", export_name, name ? name : "", log_hex(attr), init_count, log_hex(static_cast<uint32_t>(res)));
+    return res;
 }
 
 EXPORT(int, ksceKernelCreateSema) {

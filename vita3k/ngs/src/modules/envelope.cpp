@@ -19,6 +19,7 @@
 #include <util/log.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 namespace ngs {
@@ -173,8 +174,11 @@ bool EnvelopeModule::process(KernelState &kern, const MemState &mem, const SceUI
     }
 
     if (terminate) {
-        voice->rack->system->voice_scheduler.stop(mem, voice);
-        return false;
+        static std::atomic<uint32_t> terminations{ 0 };
+        const uint32_t n = terminations.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n <= 8 || (n & (n - 1)) == 0)
+            LOG_INFO("[NGSLIFE] envelope NO_LOOP_TERMINATE finished voice {} (callback {}) - {} so far", fmt::ptr(voice), voice->finished_callback ? "yes" : "none", n);
+        return true;
     }
 
     if (logical->releasing && logical->release_position_ms >= std::max<double>(params->uReleaseMsecs, 0.0)) {

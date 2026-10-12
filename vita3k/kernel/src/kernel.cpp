@@ -341,6 +341,27 @@ static std::string describe_wait_target(KernelState &kernel, MemState &mem, cons
         return fmt::format("    [cond #{}] NOT FOUND in either condvar map", uid);
     }
 
+    if (std::strcmp(kind, "rwlock") == 0) {
+        const auto it = kernel.rwlocks.find(uid);
+        if (it == kernel.rwlocks.end())
+            return fmt::format("    [rwlock #{}] NOT FOUND", uid);
+        const RWLockPtr &rw = it->second;
+        std::unique_lock<std::mutex> guard(rw->mutex, std::try_to_lock);
+        if (!guard.owns_lock())
+            return fmt::format("    [rwlock #{} '{}'] ?(busy)", uid, rw->name);
+        std::string queued;
+        for (auto q = rw->waiting_threads->begin(); q != rw->waiting_threads->end(); ++q) {
+            const WaitingThreadData data = *q;
+            queued += fmt::format(" {} {} ({})", data.is_write ? "W" : "R", data.thread->name, data.thread->id);
+        }
+        std::string readers;
+        for (const auto &[tid, n] : rw->read_holds)
+            readers += fmt::format(" {}x{}", tid, n);
+        return fmt::format("    [rwlock #{} '{}'] lock_count={} writer={} queue:{} read holders:{}", uid, rw->name, rw->lock_count,
+            rw->writer ? fmt::format("{} ({})", rw->writer->id, rw->writer->name) : std::string("NONE"),
+            queued.empty() ? " none" : queued, readers.empty() ? " none" : readers);
+    }
+
     return {};
 }
 

@@ -27,7 +27,9 @@ struct KernelState;
 struct WaitingThreadData {
     ThreadStatePtr thread;
     int32_t priority;
-    bool *was_canceled;
+    bool *was_canceled = nullptr;
+    int32_t *wake_error = nullptr;
+    SceUID relock_cond = 0;
 
     // additional fields for each primitive
     union {
@@ -92,6 +94,7 @@ struct SimpleEvent : SyncPrimitive {
 
     bool auto_reset;
     bool cb_wakeup_only;
+    bool deleted = false;
 };
 
 typedef std::shared_ptr<SimpleEvent> SimpleEventPtr;
@@ -118,6 +121,7 @@ struct Semaphore : SyncPrimitive {
     int max;
     int val;
     int init_val;
+    bool deleted = false;
 };
 
 typedef std::shared_ptr<Semaphore> SemaphorePtr;
@@ -147,19 +151,12 @@ struct Mutex : SyncPrimitive {
 typedef std::shared_ptr<Mutex> MutexPtr;
 typedef std::map<SceUID, MutexPtr> MutexPtrs;
 
-enum class RWLockState {
-    Unlocked,
-    ReadLocked,
-    WriteLocked,
-};
-
-// the int value is the lock count for recursive locks
-typedef std::map<ThreadStatePtr, int> RWLockOwners;
-
 struct RWLock : SyncPrimitive {
-    RWLockState state;
-    RWLockOwners owners;
+    ThreadStatePtr writer;
+    int32_t lock_count = 0;
     WaitingThreadQueuePtr waiting_threads;
+    bool deleted = false;
+    std::map<SceUID, int32_t> read_holds;
 };
 
 typedef std::shared_ptr<RWLock> RWLockPtr;
@@ -168,6 +165,7 @@ typedef std::map<SceUID, RWLockPtr> RWLockPtrs;
 struct EventFlag : SyncPrimitive {
     WaitingThreadQueuePtr waiting_threads;
     int flags;
+    bool deleted = false;
 };
 
 typedef std::shared_ptr<EventFlag> EventFlagPtr;
@@ -193,6 +191,7 @@ struct Condvar : SyncPrimitive {
 
     WaitingThreadQueuePtr waiting_threads;
     MutexPtr associated_mutex;
+    bool deleted = false;
 };
 typedef std::shared_ptr<Condvar> CondvarPtr;
 typedef std::map<SceUID, CondvarPtr> CondvarPtrs;
@@ -250,6 +249,7 @@ MutexPtr mutex_get(KernelState &kernel, const char *export_name, SceUID thread_i
 SceUID rwlock_create(KernelState &kernel, MemState &mem, const char *export_name, const char *name, SceUID thread_id, SceUInt32 attr);
 SceInt32 rwlock_lock(KernelState &kernel, MemState &mem, const char *export_name, SceUID thread_id, SceUID lock_id, uint32_t *timeout, bool is_write);
 SceInt32 rwlock_unlock(KernelState &kernel, MemState &mem, const char *export_name, SceUID thread_id, SceUID lock_id, bool is_write);
+SceInt32 rwlock_try_lock(KernelState &kernel, const char *export_name, SceUID thread_id, SceUID lock_id, bool is_write);
 SceInt32 rwlock_delete(KernelState &kernel, MemState &mem, const char *export_name, SceUID thread_id, SceUID lock_id);
 
 // Semaphore
@@ -282,3 +282,5 @@ SceUID msgpipe_find(KernelState &kernel, const char *export_name, const char *pN
 SceSize msgpipe_recv(KernelState &kernel, const char *export_name, SceUID thread_id, SceUID msgPipeId, SceUInt32 waitMode, void *pRecvBuf, SceSize recvSize, SceUInt32 *pTimeout);
 SceSize msgpipe_send(KernelState &kernel, const char *export_name, SceUID thread_id, SceUID msgPipeId, SceUInt32 waitMode, const void *pSendBuf, SceSize sendSize, SceUInt32 *pTimeout);
 SceInt32 msgpipe_delete(KernelState &kernel, const char *export_name, SceUID thread_id, SceUID msgpipe_id);
+
+int kernel_refuse(const char *export_name, const char *what, int error);

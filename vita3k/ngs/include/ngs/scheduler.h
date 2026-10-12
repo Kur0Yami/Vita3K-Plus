@@ -85,6 +85,7 @@ public:
     bool resume(const MemState &mem, Voice *voice);
     bool stop(const MemState &mem, Voice *voice);
     bool off(const MemState &mem, Voice *voice);
+    void cancel_finished_callback(Voice *voice);
 
     void update(KernelState &kern, MemState &mem, const SceUID thread_id);
 
