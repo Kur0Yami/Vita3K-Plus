@@ -31,6 +31,14 @@ https://github.com/nckstwrt/Vita3K-Plus/releases
 - **MotoGP 14** - Fix for audio stuttering on Android
 - **Killzone** - Fix for crashing on some Android devices
 - **DariusBurst CS** - Graphics fix
+- **WRC 3** - Car Graphics Fix
+- **MLB 15** - Fix startup crash (still has minor flickering before reaching title screen but otherwise fine)
+- **Epic Mickey 2** - Fix for Turnip devices. Still will have some graphics issues on most Mali devices.
+- **Jak & Daxter Trilogy** - Start up and Graphics fixed
+- **One Piece** - Graphics issues (black blocks/lines) fixed
+- **Hatsune Miku** - Broken song's video crashes fixed
+- **Android 17** - Fix for Turnip to work on Android 17/OneUI 9 devices
+- **Audio Fixes** - cubeb and SDL audio should no longer crackle/stutter/pop/cut out/etc
 
 # v1.2 - Released 30th Sept 2026
 - **Soul Sacrifice Delta** - Outline missing regression + floor textures fixed (Thanks doctorthoss and NaGaa95!)
