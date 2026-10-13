@@ -43,6 +43,7 @@ void guest_sched_forget_cpu(CPUState *cpu);
 CPUState *guest_sched_token_cpu();
 struct ThreadParams;
 struct KernelState;
+void note_audio_thread(KernelState &kernel, SceUID thread_id, const char *api);
 
 typedef std::unique_ptr<CPUState, std::function<void(CPUState *)>> CPUStatePtr;
 typedef std::function<void(CPUState &, uint32_t, SceUID)> CallImport;
@@ -152,6 +153,10 @@ struct ThreadState {
     void report_guest_breakpoint(uint32_t pc);
     std::string describe_suspend_state() const;
     uint32_t guest_breakpoints = 0;
+
+    void apply_host_priority();
+    void note_audio_work(const char *api);
+    std::atomic<const char *> audio_work_api{ nullptr };
 
 private:
     void push_arguments(const std::vector<uint32_t> &args);

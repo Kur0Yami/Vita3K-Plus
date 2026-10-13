@@ -50,23 +50,32 @@ void EnvelopeModule::on_key_on(const MemState &mem, ModuleData &data) {
     on_param_change(mem, data);
 }
 
-bool EnvelopeModule::process(KernelState &kern, const MemState &mem, const SceUID thread_id, ModuleData &data, std::unique_lock<std::recursive_mutex> &scheduler_lock, std::unique_lock<std::mutex> &voice_lock) {
+bool EnvelopeModule::can_release(const MemState &mem, ModuleData &data) {
     if (data.is_bypassed)
         return false;
+    const SceNgsEnvelopeParams *params = data.get_parameters<SceNgsEnvelopeParams>(mem);
+    return params && params->desc.id == SCE_NGS_ENVELOPE_PARAMS_STRUCT_ID && params->uNumPoints > 0;
+}
+
+bool EnvelopeModule::process(KernelState &kern, const MemState &mem, const SceUID thread_id, ModuleData &data, std::unique_lock<std::recursive_mutex> &scheduler_lock, std::unique_lock<std::mutex> &voice_lock) {
+    // a keyed-off voice whose envelope cannot release ends here
+    const bool finalizing = data.parent->state == VOICE_STATE_FINALIZING;
+    if (data.is_bypassed)
+        return finalizing;
 
     const SceNgsEnvelopeParams *params = data.get_parameters<SceNgsEnvelopeParams>(mem);
     if (!params)
-        return false;
+        return finalizing;
 
     if (params->desc.id != SCE_NGS_ENVELOPE_PARAMS_STRUCT_ID) {
         if (params->desc.id != 0)
             LOG_WARN_ONCE("[NGSDIAG] envelope module driven with unrecognised params struct id {:#010x} (passthrough)", params->desc.id);
-        return false;
+        return finalizing;
     }
 
     const int32_t point_count = static_cast<int32_t>(std::min<uint32_t>(params->uNumPoints, SCE_NGS_ENVELOPE_MAX_POINTS));
     if (point_count == 0)
-        return false;
+        return finalizing;
 
     Voice *voice = data.parent;
     const int32_t granularity = voice->rack->system->granularity;

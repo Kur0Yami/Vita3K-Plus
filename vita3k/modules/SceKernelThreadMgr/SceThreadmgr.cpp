@@ -1017,6 +1017,7 @@ EXPORT(SceInt32, sceKernelChangeThreadPriority2, SceUID thid, SceInt32 priority)
 
     thread->priority = priority;
     thread->tls.get_ptr<int>().get(emuenv.mem)[TLS_CURRENT_PRIORITY] = priority;
+    thread->apply_host_priority();
 
     return old_priority;
 }
@@ -1154,9 +1155,14 @@ EXPORT(int, sceKernelCreateThreadForUser, const char *name, SceKernelThreadEntry
     return thread->id;
 }
 
+static constexpr bool DELAY_THREAD_HW_FLOOR = true;
+static constexpr SceUInt DELAY_THREAD_MIN_US = 370;
+
 static int delay_thread(KernelState &kernel, SceUID thread_id, SceUInt delay_us) {
     if (delay_us == 0)
         return SCE_KERNEL_ERROR_INVALID_ARGUMENT;
+    if (DELAY_THREAD_HW_FLOOR)
+        delay_us = std::max(delay_us, DELAY_THREAD_MIN_US);
 
     const ThreadStatePtr thread = kernel.get_thread(thread_id);
     std::unique_lock<std::mutex> lock(thread->mutex);
@@ -1177,6 +1183,8 @@ static bool callback_pending(const std::vector<CallbackPtr> &callbacks) {
 
 static int delay_thread_cb(EmuEnvState &emuenv, SceUID thread_id, SceUInt delay_us) {
     constexpr int64_t CALLBACK_POLL_US = 2000;
+    if (DELAY_THREAD_HW_FLOOR && delay_us)
+        delay_us = std::max(delay_us, DELAY_THREAD_MIN_US);
     const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::microseconds(delay_us);
     std::vector<CallbackPtr> callbacks;

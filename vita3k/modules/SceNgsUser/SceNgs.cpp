@@ -22,6 +22,7 @@
 #include <kernel/state.h>
 #include <kernel/thread/thread_state.h>
 #include <mutex>
+#include <ngs/modules/envelope.h>
 #include <ngs/state.h>
 #include <ngs/system.h>
 #include <unordered_map>
@@ -475,6 +476,7 @@ EXPORT(SceUInt32, sceNgsSystemUpdate, ngs::System *system) {
         return 0;
     }
 
+    note_audio_thread(emuenv.kernel, thread_id, export_name);
     system->voice_scheduler.update(emuenv.kernel, emuenv.mem, thread_id);
 
     return SCE_NGS_OK;
@@ -895,6 +897,14 @@ EXPORT(SceInt32, sceNgsVoiceInit, ngs::Voice *voice, const SceNgsVoicePreset *pr
     return SCE_NGS_OK;
 }
 
+static bool voice_can_release(const MemState &mem, ngs::Voice &voice) {
+    for (size_t i = 0; i < voice.rack->modules.size(); i++) {
+        if (dynamic_cast<ngs::EnvelopeModule *>(voice.rack->modules[i].get()) && ngs::EnvelopeModule::can_release(mem, voice.datas[i]))
+            return true;
+    }
+    return false;
+}
+
 EXPORT(SceInt32, sceNgsVoiceKeyOff, ngs::Voice *voice) {
     TRACY_FUNC(sceNgsVoiceKeyOff, voice);
     if (!emuenv.cfg.current_config.ngs_enable) {
@@ -907,6 +917,12 @@ EXPORT(SceInt32, sceNgsVoiceKeyOff, ngs::Voice *voice) {
 
     ngs::VoiceScheduler &scheduler = voice->rack->system->voice_scheduler;
     const std::lock_guard<std::recursive_mutex> lock(scheduler.mutex);
+    if (voice->state != ngs::VoiceState::VOICE_STATE_ACTIVE)
+        return SCE_NGS_OK;
+    if (voice_can_release(emuenv.mem, *voice)) {
+        scheduler.off(emuenv.mem, voice);
+        return SCE_NGS_OK;
+    }
     voice->is_keyed_off = true;
     scheduler.off(emuenv.mem, voice);
     voice->is_keyed_off = false;

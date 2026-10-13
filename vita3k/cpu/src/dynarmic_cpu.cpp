@@ -429,6 +429,7 @@ public:
 
     template <typename T>
     T MemoryRead(Dynarmic::A32::VAddr addr) {
+        cpu->maybe_exclusive = true;
         Ptr<T> ptr{ addr };
         if (!ptr || !ptr.valid(*parent->mem) || ptr.address() < parent->mem->host_page_size) {
             if (!confirm_invalid_access(addr, "read"))
@@ -525,6 +526,7 @@ public:
 
     template <typename T>
     bool MemoryWriteExclusive(Dynarmic::A32::VAddr addr, T value, T expected) {
+        cpu->maybe_exclusive = false;
         Ptr<T> ptr{ addr };
         if (!ptr || !ptr.valid(*parent->mem) || ptr.address() < parent->mem->host_page_size) {
             if (should_log_invalid_access()) {
@@ -865,6 +867,11 @@ void DynarmicCPU::invalidate_jit_cache(Address start, size_t length) {
     jit->InvalidateCacheRange(start, length);
 }
 
+static constexpr bool CLEAR_EXCLUSIVE_ONLY_WHEN_RESERVED = true;
+
 void DynarmicCPU::clear_exclusive() {
+    if (CLEAR_EXCLUSIVE_ONLY_WHEN_RESERVED && !maybe_exclusive)
+        return;
+    maybe_exclusive = false;
     shared_monitor.ClearProcessor(core_id);
 }

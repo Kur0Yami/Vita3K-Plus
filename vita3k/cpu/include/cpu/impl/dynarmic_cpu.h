@@ -49,6 +49,7 @@ class DynarmicCPU : public CPUInterface {
     bool has_pending_log_code = false;
     bool has_pending_log_mem = false;
     bool cpu_opt;
+    bool maybe_exclusive = false;
 
     std::unique_ptr<Dynarmic::A32::Jit> make_jit();
     void rebuild_jit();

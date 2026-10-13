@@ -20,6 +20,7 @@
 #include <audio/state.h>
 #include <codec/state.h>
 #include <kernel/state.h>
+#include <kernel/thread/thread_state.h>
 #include <util/lock_and_find.h>
 #include <util/tracy.h>
 
@@ -259,11 +260,13 @@ static int decode_audio_frames(EmuEnvState &emuenv, const char *export_name, Sce
 
 EXPORT(int, sceAudiodecDecode, SceAudiodecCtrl *ctrl) {
     TRACY_FUNC(sceAudiodecDecode, ctrl);
+    note_audio_thread(emuenv.kernel, thread_id, export_name);
     return decode_audio_frames(emuenv, export_name, ctrl, 1);
 }
 
 EXPORT(int, sceAudiodecDecodeNFrames, SceAudiodecCtrl *ctrl, SceUInt32 nFrames) {
     TRACY_FUNC(sceAudiodecDecodeNFrames, ctrl, nFrames);
+    note_audio_thread(emuenv.kernel, thread_id, export_name);
     return decode_audio_frames(emuenv, export_name, ctrl, nFrames);
 }
 

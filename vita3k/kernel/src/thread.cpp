@@ -47,10 +47,13 @@
 #else
 #include <fcntl.h>
 #include <pthread.h>
+#include <sys/resource.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 #endif
+#include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -572,6 +575,23 @@ char host_thread_state(int tid) {
         return '?';
     return paren[2];
 }
+
+constexpr bool GUEST_HOST_PRIORITY = true;
+constexpr bool AUDIO_THREAD_HOST_PRIORITY = true;
+constexpr int HOST_NICE_PRIORITY_STEP = 12;
+constexpr int HOST_NICE_MAX_RAISE = 4;
+constexpr int HOST_NICE_MAX_LOWER = 3;
+constexpr int HOST_AUDIO_NICE = -16;
+
+std::once_flag g_host_nice_once;
+int g_host_base_nice = 0;
+std::atomic<bool> g_host_nice_refused{ false };
+
+int host_nice_for(const int priority) {
+    const int delta = priority - SCE_KERNEL_GAME_DEFAULT_PRIORITY_ACTUAL;
+    const int steps = delta >= 0 ? delta / HOST_NICE_PRIORITY_STEP : -((-delta + HOST_NICE_PRIORITY_STEP - 1) / HOST_NICE_PRIORITY_STEP);
+    return std::clamp(g_host_base_nice + std::clamp(steps, -HOST_NICE_MAX_RAISE, HOST_NICE_MAX_LOWER), -20, 19);
+}
 #endif
 } // namespace
 
@@ -594,6 +614,49 @@ void ThreadState::capture_host_cpu_clock() {
 #endif
     if (!host_cpu_ready.load(std::memory_order_relaxed) && !g_gate_clock_warned.exchange(true))
         LOG_WARN("[WAKEGATE] no host thread CPU clock: a thread woken by a higher-priority thread waits at most {} us for its waker to move on", WAKE_GATE_NO_CLOCK_NS / 1000);
+    apply_host_priority();
+}
+
+void ThreadState::apply_host_priority() {
+#if !defined(_WIN32) && !defined(__APPLE__)
+    const int tid = host_tid;
+    if (!GUEST_HOST_PRIORITY || !tid)
+        return;
+    std::call_once(g_host_nice_once, [tid] {
+        errno = 0;
+        const int nice = getpriority(PRIO_PROCESS, static_cast<id_t>(tid));
+        g_host_base_nice = errno ? 0 : nice;
+        LOG_INFO("Guest threads start at host nice {}; host nice follows the guest priority ({} for audio threads)", g_host_base_nice, HOST_AUDIO_NICE);
+    });
+    const int prio = priority;
+    const bool audio = AUDIO_THREAD_HOST_PRIORITY && audio_work_api.load(std::memory_order_relaxed) && prio < SCE_KERNEL_GAME_DEFAULT_PRIORITY_ACTUAL;
+    const int nice = audio ? std::min(host_nice_for(prio), HOST_AUDIO_NICE) : host_nice_for(prio);
+    if (setpriority(PRIO_PROCESS, static_cast<id_t>(tid), nice) != 0 && !g_host_nice_refused.exchange(true)) {
+        const int err = errno;
+        LOG_WARN("Host nice {} for guest priority {} refused: errno {} ({})", nice, prio, err, strerror(err));
+    }
+#endif
+}
+
+void ThreadState::note_audio_work(const char *api) {
+    const char *none = nullptr;
+    if (audio_work_api.load(std::memory_order_relaxed) || !audio_work_api.compare_exchange_strong(none, api, std::memory_order_relaxed))
+        return;
+#if !defined(_WIN32) && !defined(__APPLE__)
+    if (GUEST_HOST_PRIORITY && AUDIO_THREAD_HOST_PRIORITY && priority < SCE_KERNEL_GAME_DEFAULT_PRIORITY_ACTUAL) {
+        apply_host_priority();
+        LOG_INFO("Thread '{}' ({}) does audio work ({}): host nice {}", name, id, api, HOST_AUDIO_NICE);
+    }
+#endif
+}
+
+void note_audio_thread(KernelState &kernel, const SceUID thread_id, const char *api) {
+    thread_local bool noted = false;
+    if (noted)
+        return;
+    noted = true;
+    if (const ThreadStatePtr thread = kernel.get_thread(thread_id))
+        thread->note_audio_work(api);
 }
 
 int64_t ThreadState::host_cpu_now() const {

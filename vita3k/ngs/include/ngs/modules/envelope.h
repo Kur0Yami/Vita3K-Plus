@@ -73,6 +73,7 @@ public:
     void on_param_change(const MemState &mem, ModuleData &data) override;
     void on_key_on(const MemState &mem, ModuleData &data) override;
     uint32_t module_id() const override { return 0x5CE3; }
+    static bool can_release(const MemState &mem, ModuleData &data);
     uint32_t get_guest_state_size() const override { return sizeof(SceNgsEnvelopeStates); }
 
     static constexpr uint32_t get_max_parameter_size() {
