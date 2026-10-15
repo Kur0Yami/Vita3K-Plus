@@ -543,6 +543,13 @@ std::mutex g_gate_mutex;
 std::condition_variable g_gate_cv;
 std::atomic<int64_t> g_gate_last_cap_log_ns{ 0 };
 std::atomic<bool> g_gate_clock_warned{ false };
+constexpr int64_t START_PREEMPT_CAP_NS = 20'000'000;
+std::atomic<int64_t> g_start_preempt_last_cap_log_ns{ 0 };
+
+SceInt32 start_user_cores(const SceInt32 affinity) {
+    const SceInt32 cores = affinity & SCE_KERNEL_CPU_MASK_USER_ALL;
+    return cores ? cores : SCE_KERNEL_CPU_MASK_USER_ALL;
+}
 
 int64_t gate_now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -594,6 +601,33 @@ int host_nice_for(const int priority) {
 }
 #endif
 } // namespace
+
+void start_preempt_wait(KernelState &kernel, const SceUID starter_id, const ThreadStatePtr &started) {
+    const ThreadStatePtr starter = kernel.get_thread(starter_id);
+    if (!starter || !started || starter == started || !kernel.preempt_on_wake || started->priority >= starter->priority
+        || !(start_user_cores(started->affinity_mask) & start_user_cores(starter->affinity_mask)))
+        return;
+    guest_sched_release_for_block();
+    const int64_t start = gate_now_ns();
+    bool capped = false;
+    {
+        std::unique_lock<std::mutex> lock(started->mutex);
+        while (started->status == ThreadStatus::run && !started->is_delete_requested()) {
+            if (gate_now_ns() - start >= START_PREEMPT_CAP_NS) {
+                capped = true;
+                break;
+            }
+            started->status_cond.wait_for(lock, std::chrono::microseconds(500));
+        }
+    }
+    if (capped) {
+        const int64_t now = gate_now_ns();
+        int64_t last = g_start_preempt_last_cap_log_ns.load(std::memory_order_relaxed);
+        if (now - last >= 1'000'000'000 && g_start_preempt_last_cap_log_ns.compare_exchange_strong(last, now))
+            LOG_WARN("[STARTPREEMPT] '{}' ({}) stopped waiting after {} ms for '{}' ({}), the higher-priority thread it started, which has not blocked yet",
+                starter->name, starter_id, START_PREEMPT_CAP_NS / 1'000'000, started->name, started->id);
+    }
+}
 
 void ThreadState::capture_host_cpu_clock() {
     if (host_cpu_ready.load(std::memory_order_relaxed))
@@ -889,9 +923,9 @@ void ThreadState::run_loop() {
                 last_import_nid = nid;
                 last_import_lr = read_lr(*cpu);
                 push_import_ring(nid);
-                hle_enters.fetch_add(1);
+                hle_enters.store(hle_enters.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
                 kernel.call_import(*cpu, nid, id);
-                hle_returns.fetch_add(1);
+                hle_returns.store(hle_returns.load(std::memory_order_relaxed) + 1, std::memory_order_release);
                 if (gated_wakees.load() > 0)
                     wake_gate_notify();
                 clear_exclusive(*cpu);
@@ -901,7 +935,7 @@ void ThreadState::run_loop() {
             sched_maybe_yield(affinity_mask, gated, cpu.get());
 
             // handle pending abort (exception handler from page fault)
-            if (cpu->abort_pending.exchange(false))
+            if (cpu->abort_pending.load(std::memory_order_relaxed) && cpu->abort_pending.exchange(false))
                 dispatch_abort(*cpu);
 
             // Cue Probe
@@ -938,9 +972,9 @@ void ThreadState::run_loop() {
                     last_import_nid = nid;
                     last_import_lr = read_lr(*cpu);
                     push_import_ring(nid);
-                    hle_enters.fetch_add(1);
+                    hle_enters.store(hle_enters.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
                     kernel.call_import(*cpu, nid, id);
-                    hle_returns.fetch_add(1);
+                    hle_returns.store(hle_returns.load(std::memory_order_relaxed) + 1, std::memory_order_release);
                     if (gated_wakees.load() > 0)
                         wake_gate_notify();
                     clear_exclusive(*cpu);

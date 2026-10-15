@@ -733,6 +733,7 @@ EXPORT(int, _sceKernelStartThread, SceUID thid, SceSize arglen, Ptr<void> argp) 
     if (res < 0) {
         return RET_ERROR(res);
     }
+    start_preempt_wait(emuenv.kernel, thread_id, thread);
     return res;
 }
 

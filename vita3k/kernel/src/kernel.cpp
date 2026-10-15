@@ -382,7 +382,7 @@ void KernelState::log_thread_hang_dump() {
         std::string line;
         if (status == ThreadStatus::run) {
             const uint32_t run_pc = read_pc(*t->cpu) & ~1u;
-            line = fmt::format("thread {} ({}) status=run pc~0x{:X} lr~0x{:X} last_import_nid=0x{:08X} import_lr=0x{:X}", t->name, t->id, run_pc, read_lr(*t->cpu), t->last_import_nid, t->last_import_lr);
+            line = fmt::format("thread {} ({}) prio={} aff=0x{:X} status=run pc~0x{:X} lr~0x{:X} last_import_nid=0x{:08X} import_lr=0x{:X}", t->name, t->id, t->priority, static_cast<uint32_t>(t->affinity_mask), run_pc, read_lr(*t->cpu), t->last_import_nid, t->last_import_lr);
             for (int ri = 0; ri <= 7; ri++)
                 line += fmt::format(" r{}=0x{:X}", ri, read_reg(*t->cpu, ri));
             uint32_t code[16];
@@ -393,7 +393,7 @@ void KernelState::log_thread_hang_dump() {
             }
             line += "\n" + t->log_stack_traceback();
         } else {
-            line = fmt::format("thread {} ({}) status={} PC=0x{:X} LR=0x{:X} last_import_nid=0x{:08X} import_lr=0x{:X} stack:\n{}", t->name, t->id, status_str, read_pc(*t->cpu), read_lr(*t->cpu), t->last_import_nid, t->last_import_lr, t->log_stack_traceback())
+            line = fmt::format("thread {} ({}) prio={} aff=0x{:X} status={} PC=0x{:X} LR=0x{:X} last_import_nid=0x{:08X} import_lr=0x{:X} stack:\n{}", t->name, t->id, t->priority, static_cast<uint32_t>(t->affinity_mask), status_str, read_pc(*t->cpu), read_lr(*t->cpu), t->last_import_nid, t->last_import_lr, t->log_stack_traceback())
                 + fmt::format(" waiting_on={}#{} extra=0x{:X}", t->wait_prim_kind ? t->wait_prim_kind : "?", t->wait_prim_uid, t->wait_extra);
             if (const std::string target = describe_wait_target(*this, t->get_mem(), t); !target.empty())
                 line += "\n" + target;

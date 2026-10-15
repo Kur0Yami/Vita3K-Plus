@@ -154,7 +154,7 @@ static void process_batch(renderer::State &state, const FeatureState &features, 
         } else {
             CommandHelper helper(cmd);
             state.last_cmd_opcode.store(static_cast<int>(cmd->opcode), std::memory_order_relaxed); // seq-249
-            state.last_cmd_epoch_ms.store(duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
+            state.last_cmd_epoch_ms.store(coarse_now_ms(), std::memory_order_relaxed);
             handler_fn(state, mem, config, helper, features, command_list.context);
         }
 

@@ -54,6 +54,7 @@ int kernel_refuse(const char *export_name, const char *what, const int error) {
 struct PreemptTarget {
     ThreadStatePtr thread;
     int priority;
+    SceInt32 affinity;
     MutexPtr mutex;
     SceUID evf_uid;
     uint32_t wait_seq;
@@ -73,13 +74,21 @@ static bool preempt_turn_over(const PreemptTarget &t) {
     return t.mutex->owner_id != t.thread->id;
 }
 
+static SceInt32 preempt_user_cores(const SceInt32 affinity) {
+    const SceInt32 cores = affinity & SCE_KERNEL_CPU_MASK_USER_ALL;
+    return cores ? cores : SCE_KERNEL_CPU_MASK_USER_ALL;
+}
+
 static void preempt_after_wake(KernelState &kernel, SceUID caller_tid, std::vector<PreemptTarget> &woken) {
     const ThreadStatePtr caller = kernel.get_thread(caller_tid);
     if (!caller || kernel.preempt_on_wake_us <= 0)
         return;
-    woken.erase(std::remove_if(woken.begin(), woken.end(), [&](const PreemptTarget &t) { return t.priority >= caller->priority; }), woken.end());
+    const SceInt32 caller_cores = preempt_user_cores(caller->affinity_mask);
+    woken.erase(std::remove_if(woken.begin(), woken.end(), [&](const PreemptTarget &t) { return t.priority >= caller->priority || !(preempt_user_cores(t.affinity) & caller_cores); }), woken.end());
+    if (woken.empty())
+        return;
     const auto start = std::chrono::steady_clock::now();
-    while (!woken.empty() && std::chrono::steady_clock::now() - start < std::chrono::microseconds(kernel.preempt_on_wake_us)) {
+    while (std::chrono::steady_clock::now() - start < std::chrono::microseconds(kernel.preempt_on_wake_us)) {
         if (std::all_of(woken.begin(), woken.end(), preempt_turn_over))
             return;
         std::this_thread::yield();
@@ -1219,7 +1228,7 @@ inline static int mutex_unlock_impl(KernelState &kernel, MemState &mem, const ch
                     const std::lock_guard<std::mutex> waiting_thread_lock(waiting_thread->mutex);
                     waiting_thread->update_status(ThreadStatus::run, ThreadStatus::wait);
                     if (kernel.preempt_on_wake)
-                        woken.push_back({ waiting_thread, waiting_thread->priority, mutex, 0, 0 });
+                        woken.push_back({ waiting_thread, waiting_thread->priority, waiting_thread->affinity_mask, mutex, 0, 0 });
 
                     mutex->waiting_threads->pop();
                     mutex->lock_count += waiting_lock_count;
@@ -2560,7 +2569,7 @@ SceInt32 eventflag_set(KernelState &kernel, const char *export_name, SceUID thre
 
                 waiting_thread->update_status(ThreadStatus::run, ThreadStatus::wait);
                 if (kernel.preempt_on_wake)
-                    woken.push_back({ waiting_thread, waiting_thread->priority, nullptr, event->uid, waiting_thread->wait_seq });
+                    woken.push_back({ waiting_thread, waiting_thread->priority, waiting_thread->affinity_mask, nullptr, event->uid, waiting_thread->wait_seq });
                 woken_count++;
 
                 event->waiting_threads->erase(it++);

@@ -44,6 +44,7 @@ CPUState *guest_sched_token_cpu();
 struct ThreadParams;
 struct KernelState;
 void note_audio_thread(KernelState &kernel, SceUID thread_id, const char *api);
+void start_preempt_wait(KernelState &kernel, SceUID starter_id, const std::shared_ptr<ThreadState> &started);
 
 typedef std::unique_ptr<CPUState, std::function<void(CPUState *)>> CPUStatePtr;
 typedef std::function<void(CPUState &, uint32_t, SceUID)> CallImport;

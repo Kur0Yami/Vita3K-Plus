@@ -21,6 +21,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <future>
 #include <mutex>
 #include <vector>
@@ -361,14 +362,24 @@ void stream_snapshot_kick(MemState &mem, CommandList &list) {
     }
 }
 
+int64_t coarse_now_ms() {
+#ifdef __linux__
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+    return static_cast<int64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+#else
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+}
+
 const uint8_t *stream_snapshot_get(const uint64_t handle, const uint32_t size) {
     if ((!GUEST_STREAM_SNAPSHOT && !GUEST_INDEX_SNAPSHOT) || handle == ~0ull || !size)
         return nullptr;
 
     const std::lock_guard<std::mutex> lock(g_snap_mutex);
-    const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (now >= g_snap_next_report) {
-        g_snap_next_report = now + 10000000;
+    const int64_t now_ms = coarse_now_ms();
+    if (now_ms >= g_snap_next_report) {
+        g_snap_next_report = now_ms + 10000;
         LOG_INFO("[SNAPSHOT] copied {} bound {} stale {} mismatch {}", g_snap_copied, g_snap_bound, g_snap_stale, g_snap_mismatch);
     }
 
