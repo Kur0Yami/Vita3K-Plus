@@ -504,6 +504,7 @@ SDLMAIN_DECLSPEC int SDL_main(int argc, char *argv[]) {
                     break;
                 }
 
+                case SDL_EVENT_JOYSTICK_ADDED:
                 case SDL_EVENT_GAMEPAD_ADDED:
                 case SDL_EVENT_GAMEPAD_REMOVED:
                     refresh_controllers(emuenv->ctrl, *emuenv);

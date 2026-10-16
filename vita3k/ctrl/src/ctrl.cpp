@@ -25,8 +25,14 @@
 #include <kernel/state.h>
 #include <util/log.h>
 
+#ifdef __ANDROID__
+#include <SDL3/SDL_system.h>
+#endif
+
+#include <algorithm>
 #include <cmath>
 #include <set>
+#include <string>
 
 static int reserve_port(CtrlState &state) {
     for (int i = 0; i < SCE_CTRL_MAX_WIRELESS_NUM; i++) {
@@ -50,6 +56,63 @@ SceCtrlExternalInputMode get_type_of_controller(CtrlState &state, int port) {
     return SCE_CTRL_TYPE_DS3;
 }
 
+#ifdef __ANDROID__
+static void map_android_half_controllers() {
+    constexpr uint16_t FACE_BUTTONS = (1 << SDL_GAMEPAD_BUTTON_SOUTH) | (1 << SDL_GAMEPAD_BUTTON_EAST) | (1 << SDL_GAMEPAD_BUTTON_WEST) | (1 << SDL_GAMEPAD_BUTTON_NORTH);
+    static const std::pair<SDL_GamepadButton, const char *> BUTTONS[] = {
+        { SDL_GAMEPAD_BUTTON_BACK, "back:b4," },
+        { SDL_GAMEPAD_BUTTON_START, "start:b6," },
+        { SDL_GAMEPAD_BUTTON_LEFT_STICK, "leftstick:b7," },
+        { SDL_GAMEPAD_BUTTON_RIGHT_STICK, "rightstick:b8," },
+        { SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, "leftshoulder:b9," },
+        { SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, "rightshoulder:b10," },
+        { SDL_GAMEPAD_BUTTON_DPAD_UP, "dpup:b11," },
+        { SDL_GAMEPAD_BUTTON_DPAD_DOWN, "dpdown:b12," },
+        { SDL_GAMEPAD_BUTTON_DPAD_LEFT, "dpleft:b13," },
+        { SDL_GAMEPAD_BUTTON_DPAD_RIGHT, "dpright:b14," },
+    };
+    static std::set<SDL_JoystickID> reported;
+
+    int count = 0;
+    SDL_JoystickID *joysticks = SDL_GetJoysticks(&count);
+    if (!joysticks)
+        return;
+    for (int i = 0; i < count; i++) {
+        const SDL_JoystickID id = joysticks[i];
+        if (SDL_IsGamepad(id))
+            continue;
+        const char *id_name = SDL_GetJoystickNameForID(id);
+        std::string name = (id_name && *id_name) ? id_name : "unnamed";
+        if (name.starts_with("uinput-") || name.starts_with("gf_"))
+            continue;
+
+        const SDL_GUID guid = SDL_GetJoystickGUIDForID(id);
+        const uint16_t buttons = static_cast<uint16_t>(guid.data[12] | (guid.data[13] << 8));
+        const uint16_t axes = static_cast<uint16_t>(guid.data[14] | (guid.data[15] << 8));
+        char guid_string[33];
+        SDL_GUIDToString(guid, guid_string, sizeof(guid_string));
+
+        std::string controls;
+        for (const auto &[button, entry] : BUTTONS) {
+            if (buttons & (1 << button))
+                controls += entry;
+        }
+        if (!(buttons & FACE_BUTTONS) && !controls.empty() && (axes & 0x7FFF) == 0x0003) {
+            if ((buttons & (1 << SDL_GAMEPAD_BUTTON_GUIDE)) && SDL_GetAndroidSDKVersion() >= 30)
+                controls += "guide:b5,";
+            std::replace(name.begin(), name.end(), ',', ' ');
+            const std::string mapping = fmt::format("{},{},{}leftx:a0,lefty:a1,", guid_string, name, controls);
+            const bool added = SDL_AddGamepadMapping(mapping.c_str()) >= 0;
+            LOG_INFO("[CTRL] joystick '{}' (id {}, buttons 0x{:04X}, axes 0x{:04X}) has no face buttons, so SDL left it out; mapped from its reported controls{}: {}",
+                name, id, buttons, axes, added ? std::string() : fmt::format(" FAILED ({})", SDL_GetError()), mapping);
+        } else if (reported.insert(id).second) {
+            LOG_INFO("[CTRL] joystick '{}' (id {}, guid {}, buttons 0x{:04X}, axes 0x{:04X}) is not a gamepad and is not used", name, id, guid_string, buttons, axes);
+        }
+    }
+    SDL_free(joysticks);
+}
+#endif
+
 void refresh_controllers(CtrlState &state, EmuEnvState &emuenv) {
     // Remove disconnected controllers
     bool found_gyro = false;
@@ -71,6 +134,10 @@ void refresh_controllers(CtrlState &state, EmuEnvState &emuenv) {
 
     // gamepads left out are reported once each
     static std::set<SDL_JoystickID> reported_skips;
+
+#ifdef __ANDROID__
+    map_android_half_controllers();
+#endif
 
     // Add new controllers
     int num_gamepads = 0;

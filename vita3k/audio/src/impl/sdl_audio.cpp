@@ -71,8 +71,8 @@ SDLAudioAdapter::~SDLAudioAdapter() {
 
 bool SDLAudioAdapter::init() {
 #ifdef __ANDROID__
-    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "1024");
-    SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, "0");
+    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "512");
+    SDL_SetHint(SDL_HINT_ANDROID_LOW_LATENCY_AUDIO, "1");
     // SDL's AAudio device advertises its 44.1 kHz default, so ask for the Vita's 48 kHz explicitly
     const SDL_AudioSpec spec = {
         .format = SDL_AUDIO_S16LE,
