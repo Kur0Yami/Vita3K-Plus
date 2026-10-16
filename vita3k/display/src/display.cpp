@@ -182,6 +182,14 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
             }
         }
 
+        {
+            std::string deferred_reason;
+            if (!emuenv.kernel.is_threads_paused() && take_deferred_thread_dump(deferred_reason)) {
+                LOG_ERROR("DEFERRED THREAD DUMP: {}", deferred_reason);
+                emuenv.kernel.log_thread_hang_dump();
+            }
+        }
+
         // Hang watchdog - if there's no framebuffer flip for ~10s (600 vblanks) while unpaused then dump guest threads
         {
             static uint64_t last_dumped_setframe = ~0ull;
@@ -405,7 +413,11 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
                         provable_handed_over = true;
                         LOG_ERROR("HANG WATCHDOG: the game wedged again {} vblanks after the last provable-cycle release, leaving this wedge to the stall breaker", setframe - last_provable_break_vblank);
                     }
-                    if (!provable_handed_over) {
+                    std::string assert_note;
+                    const bool held_for_assert = guest_assert_holds_breakers(assert_note);
+                    if (!assert_note.empty())
+                        LOG_ERROR("HANG WATCHDOG: breakers held for the rest of this boot - a guest library trapped on a broken invariant: {}", assert_note);
+                    if (!provable_handed_over && !held_for_assert) {
                         const int broken = emuenv.kernel.try_break_provable_evf_cycle();
                         if (broken > 0) {
                             last_provable_break_setframe = setframe;
@@ -445,8 +457,14 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
                         continue;
                     }*/
 #endif
-                    const int nudged = emuenv.kernel.try_break_frame_sync_deadlock(nudged_this_stall);
-                    if (nudged > 0) {
+                    std::string assert_note;
+                    const bool held_for_assert = guest_assert_holds_breakers(assert_note);
+                    if (!assert_note.empty())
+                        LOG_ERROR("HANG WATCHDOG: breakers held for the rest of this boot - a guest library trapped on a broken invariant: {}", assert_note);
+                    const int nudged = held_for_assert ? 0 : emuenv.kernel.try_break_frame_sync_deadlock(nudged_this_stall);
+                    if (held_for_assert) {
+                        LOG_ERROR("HANG WATCHDOG: no flip for {} vblanks after a guest assertion - not forcing event flags or condition variables", stall_vblanks);
+                    } else if (nudged > 0) {
                         LOG_ERROR("HANG WATCHDOG: deadlock breaker nudged {} stuck event flag(s) after {} vblanks stalled", nudged, stall_vblanks);
                     } else {
                         // No stuck event flag to nudge. Try the condvar path.

@@ -26,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -45,6 +46,24 @@ struct ThreadParams;
 struct KernelState;
 void note_audio_thread(KernelState &kernel, SceUID thread_id, const char *api);
 void start_preempt_wait(KernelState &kernel, SceUID starter_id, const std::shared_ptr<ThreadState> &started);
+void core_lock_begin_boot(uint32_t boot);
+bool core_lock_shares_core(SceInt32 a, SceInt32 b);
+void core_lock_release_for_block();
+void core_lock_take_current();
+std::string core_lock_report(KernelState &kernel);
+void request_deferred_thread_dump(const std::string &reason);
+bool take_deferred_thread_dump(std::string &reason);
+void note_guest_assert(const std::string &what);
+bool guest_assert_holds_breakers(std::string &first_note);
+void guest_assert_begin_boot();
+enum : uint8_t {
+    SIGNAL_WAIT_ENTER = 0,
+    SIGNAL_WAIT_RETURN = 1,
+    SIGNAL_SEND = 2,
+    SIGNAL_DELETE_WAKE = 3,
+};
+void note_signal_event(uint8_t op, ThreadState *caller, SceUID target, int result);
+std::string signal_event_report(const std::function<std::string(SceUID)> &name_of, size_t max_events);
 
 typedef std::unique_ptr<CPUState, std::function<void(CPUState *)>> CPUStatePtr;
 typedef std::function<void(CPUState &, uint32_t, SceUID)> CallImport;
@@ -61,8 +80,9 @@ struct ThreadSignal {
     ThreadSignal() = default;
     ~ThreadSignal() = default;
 
-    void wait();
+    bool wait();
     bool send();
+    bool pending();
 
 private:
     std::mutex mutex;
@@ -78,9 +98,11 @@ struct ThreadState {
     uint32_t last_import_nid = 0;
     uint32_t last_import_lr = 0;
     uint32_t import_ring[16] = {};
+    uint32_t import_ring_lr[16] = {};
     uint8_t import_ring_pos = 0;
-    void push_import_ring(uint32_t nid) {
+    void push_import_ring(uint32_t nid, uint32_t lr) {
         import_ring[import_ring_pos & 15] = nid;
+        import_ring_lr[import_ring_pos & 15] = lr;
         import_ring_pos++;
     }
     const char *wait_prim_kind = nullptr;
@@ -158,6 +180,9 @@ struct ThreadState {
     void apply_host_priority();
     void note_audio_work(const char *api);
     std::atomic<const char *> audio_work_api{ nullptr };
+    bool inside_hle() const { return hle_enters.load(std::memory_order_relaxed) != hle_returns.load(std::memory_order_relaxed); }
+    uint64_t hle_calls_entered() const { return hle_enters.load(std::memory_order_relaxed); }
+    bool leave_requested() const { return delete_requested || suspend_requested || world_stop_requested; }
 
 private:
     void push_arguments(const std::vector<uint32_t> &args);

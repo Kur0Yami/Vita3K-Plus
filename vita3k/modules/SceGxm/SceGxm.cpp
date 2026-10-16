@@ -1344,6 +1344,7 @@ static int destroy_gxm_context(EmuEnvState &emuenv, SceGxmContext *context, cons
         if (force_backend_destroy) {
             renderer::destroy_context_during_shutdown(*emuenv.renderer, context->renderer);
         } else {
+            guest_sched_release_for_block();
             renderer::destroy_context(*emuenv.renderer, context->renderer);
         }
 
@@ -1456,6 +1457,7 @@ static int destroy_gxm_render_target(EmuEnvState &emuenv, SceGxmRenderTarget *re
     if (force_backend_destroy) {
         renderer::destroy_render_target_during_shutdown(*emuenv.renderer, render_target->renderer);
     } else {
+        guest_sched_release_for_block();
         renderer::destroy_render_target(*emuenv.renderer, render_target->renderer);
     }
 
@@ -2145,6 +2147,7 @@ EXPORT(int, sceGxmCreateContext, const SceGxmContextParams *params, Ptr<SceGxmCo
 
     ctx->state.type = SCE_GXM_CONTEXT_TYPE_IMMEDIATE;
 
+    guest_sched_release_for_block();
     if (!renderer::create_context(*emuenv.renderer, ctx->renderer)) {
         ctx->~SceGxmContext();
         context->reset();
@@ -2243,6 +2246,7 @@ EXPORT(int, sceGxmCreateRenderTarget, const SceGxmRenderTargetParams *params, Pt
     }
 
     SceGxmRenderTarget *const rt = renderTarget->get(emuenv.mem);
+    guest_sched_release_for_block();
     if (!renderer::create_render_target(*emuenv.renderer, rt->renderer, params)) {
         free(emuenv.mem, *renderTarget);
         return RET_ERROR(SCE_GXM_ERROR_DRIVER);
@@ -3194,8 +3198,10 @@ EXPORT(int, sceGxmMapMemory, Ptr<void> base, uint32_t size, uint32_t attribs) {
 
         // little big planet maps regions of size 0
         // thread_id lets the renderer's stop-the-world handler exclude this blocked caller from its wait.
-        if (emuenv.renderer->features.enable_memory_mapping && size > 0)
+        if (emuenv.renderer->features.enable_memory_mapping && size > 0) {
+            guest_sched_release_for_block();
             renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::MemoryMap, true, aligned_base, size, static_cast<uint32_t>(thread_id));
+        }
 
         return 0;
     }
@@ -6119,8 +6125,10 @@ EXPORT(int, sceGxmUnmapMemory, Ptr<void> base) {
     }
 
     // The renderer-side handler stops the world for the transition (see creation.cpp).
-    if (emuenv.renderer->features.enable_memory_mapping && ite->second.size > 0)
+    if (emuenv.renderer->features.enable_memory_mapping && ite->second.size > 0) {
+        guest_sched_release_for_block();
         renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::MemoryUnmap, true, aligned_base, static_cast<uint32_t>(thread_id));
+    }
 
     emuenv.gxm.memory_mapped_regions.erase(ite);
     return 0;

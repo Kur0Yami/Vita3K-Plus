@@ -6,9 +6,9 @@ set(VITA3K_APP_VER_HI 1)
 set(VITA3K_APP_VER_MID 3)
 set(VITA3K_APP_VER_LO 0)
 # two-component display version (v1.1): the numeric LO still feeds the exe FILE_VERSION resource  // Nick - Version
-set(VITA3K_APP_VERSION "v${VITA3K_APP_VER_HI}.${VITA3K_APP_VER_MID} RC4")
+set(VITA3K_APP_VERSION "v${VITA3K_APP_VER_HI}.${VITA3K_APP_VER_MID}")
 # Release number advertised to the updater (must match "Vita3K Build: <n>" in the GitHub release body) and rise each release
-set(VITA3K_APP_NUMBER 2)
+set(VITA3K_APP_NUMBER 3)
 
 execute_process(
 	COMMAND git rev-list HEAD --count

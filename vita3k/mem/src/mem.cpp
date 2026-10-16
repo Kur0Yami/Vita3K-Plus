@@ -45,6 +45,10 @@ static std::atomic<bool> g_emulate_refused_jit_access{ false };
 #include <sys/mman.h>
 #include <unistd.h>
 #include <unwind.h>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+#include <cstdio>
 #endif
 
 constexpr uint32_t STANDARD_PAGE_SIZE = KiB(4);
@@ -1224,6 +1228,24 @@ static uintptr_t extract_fault_lr(ucontext_t *context) {
 #endif
 }
 
+static thread_local int t_first_fault_sig = 0;
+static thread_local uintptr_t t_first_fault_addr = 0;
+static thread_local uintptr_t t_first_fault_pc = 0;
+static thread_local uintptr_t t_first_fault_lr = 0;
+static uintptr_t g_self_base = 0;
+
+static void report_nested_fault(int sig, siginfo_t *info, ucontext_t *context) {
+    char buf[400];
+    snprintf(buf, sizeof(buf), "[CRASH] nested fault: signal %d at address 0x%zx pc 0x%zx lr 0x%zx while handling signal %d at address 0x%zx pc 0x%zx lr 0x%zx (libVita3K base 0x%zx)\n",
+        sig, static_cast<size_t>(reinterpret_cast<uintptr_t>(info->si_addr)), static_cast<size_t>(extract_fault_pc(context)), static_cast<size_t>(extract_fault_lr(context)),
+        t_first_fault_sig, static_cast<size_t>(t_first_fault_addr), static_cast<size_t>(t_first_fault_pc), static_cast<size_t>(t_first_fault_lr), static_cast<size_t>(g_self_base));
+#ifdef __ANDROID__
+    __android_log_write(ANDROID_LOG_FATAL, "Vita3K", buf);
+#endif
+    const ssize_t written = write(STDERR_FILENO, buf, strlen(buf));
+    (void)written;
+}
+
 static void signal_handler(int sig, siginfo_t *info, void *uct) noexcept {
     auto context = static_cast<ucontext_t *>(uct);
 
@@ -1232,10 +1254,15 @@ static void signal_handler(int sig, siginfo_t *info, void *uct) noexcept {
 
     static thread_local int handler_depth = 0;
     if (handler_depth >= 1) {
+        report_nested_fault(sig, info, context);
         signal(sig, SIG_DFL);
         return;
     }
     handler_depth++;
+    t_first_fault_sig = sig;
+    t_first_fault_addr = reinterpret_cast<uintptr_t>(info->si_addr);
+    t_first_fault_pc = extract_fault_pc(context);
+    t_first_fault_lr = extract_fault_lr(context);
     struct DepthGuard {
         int &depth;
         ~DepthGuard() { --depth; }
@@ -1363,6 +1390,9 @@ static void signal_handler(int sig, siginfo_t *info, void *uct) noexcept {
 
 static void register_access_violation_handler(const AccessViolationHandler &handler) {
     access_violation_handler = handler;
+    Dl_info self{};
+    if (dladdr(reinterpret_cast<void *>(&signal_handler), &self) != 0)
+        g_self_base = reinterpret_cast<uintptr_t>(self.dli_fbase);
     struct sigaction sa;
     sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);

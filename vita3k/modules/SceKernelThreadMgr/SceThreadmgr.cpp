@@ -846,9 +846,11 @@ EXPORT(int, _sceKernelWaitSignal, uint32_t unknown, uint32_t delay, uint32_t tim
     TRACY_FUNC(_sceKernelWaitSignal, unknown, delay, timeout);
     STUBBED("sceKernelWaitSignal");
     const auto thread = emuenv.kernel.get_thread(thread_id);
+    note_signal_event(SIGNAL_WAIT_ENTER, thread.get(), thread_id, thread->signal.pending() ? 1 : 0);
     thread->update_status(ThreadStatus::wait);
-    thread->signal.wait();
+    const bool was_pending = thread->signal.wait();
     thread->update_status(ThreadStatus::run);
+    note_signal_event(SIGNAL_WAIT_RETURN, thread.get(), thread_id, was_pending ? 1 : 0);
     return SCE_KERNEL_OK;
 }
 
@@ -1518,7 +1520,14 @@ EXPORT(int, sceKernelSendSignal, SceUID target_thread_id) {
     TRACY_FUNC(sceKernelSendSignal, target_thread_id);
     STUBBED("sceKernelSendSignal");
     const auto thread = emuenv.kernel.get_thread(target_thread_id);
-    if (!thread->signal.send()) {
+    const ThreadStatePtr caller = emuenv.kernel.get_thread(thread_id);
+    if (!thread) {
+        note_signal_event(SIGNAL_SEND, caller.get(), target_thread_id, -1);
+        return RET_ERROR(SCE_KERNEL_ERROR_UNKNOWN_THREAD_ID);
+    }
+    const bool sent = thread->signal.send();
+    note_signal_event(SIGNAL_SEND, caller.get(), target_thread_id, sent ? 0 : 1);
+    if (!sent) {
         return SCE_KERNEL_ERROR_ALREADY_SENT;
     }
     return SCE_KERNEL_OK;

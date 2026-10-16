@@ -84,7 +84,7 @@ static void preempt_after_wake(KernelState &kernel, SceUID caller_tid, std::vect
     if (!caller || kernel.preempt_on_wake_us <= 0)
         return;
     const SceInt32 caller_cores = preempt_user_cores(caller->affinity_mask);
-    woken.erase(std::remove_if(woken.begin(), woken.end(), [&](const PreemptTarget &t) { return t.priority >= caller->priority || !(preempt_user_cores(t.affinity) & caller_cores); }), woken.end());
+    woken.erase(std::remove_if(woken.begin(), woken.end(), [&](const PreemptTarget &t) { return t.priority >= caller->priority || !(preempt_user_cores(t.affinity) & caller_cores) || core_lock_shares_core(t.affinity, caller->affinity_mask); }), woken.end());
     if (woken.empty())
         return;
     const auto start = std::chrono::steady_clock::now();
@@ -1986,6 +1986,8 @@ int condvar_wait(KernelState &kernel, MemState &mem, const char *export_name, Sc
     if (wait_res == SCE_KERNEL_OK && wake_error)
         return wake_error;
 
+    // as on a Vita, the woken thread re-takes the mutex only once it is back on its core
+    core_lock_take_current();
     const CallbackWaitScope no_callbacks(false);
     const auto relock = [&] {
         const int res = mutex_lock_impl(kernel, mem, export_name, thread_id, 1, condvar->associated_mutex, weight, nullptr, false, condid);

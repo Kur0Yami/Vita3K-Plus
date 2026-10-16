@@ -155,8 +155,10 @@ EXPORT(int, sceKernelFreeMemBlock, SceUID uid) {
 
 EXPORT(int, sceKernelFreeMemBlockForVM, SceUID uid) {
     TRACY_FUNC(sceKernelFreeMemBlockForVM, uid);
-    if (emuenv.renderer && renderer::has_dormant_mappings())
+    if (emuenv.renderer && renderer::has_dormant_mappings()) {
+        guest_sched_release_for_block();
         renderer::send_single_command(*emuenv.renderer, nullptr, renderer::CommandOpcode::MemoryUnmapFlush, true, static_cast<uint32_t>(thread_id));
+    }
 
     const auto state = emuenv.kernel.obj_store.get<SysmemState>();
     const auto guard = std::lock_guard<std::mutex>(state->mutex);

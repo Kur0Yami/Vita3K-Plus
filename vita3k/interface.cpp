@@ -537,6 +537,10 @@ static ExitCode load_app_impl(SceUID &main_module_id, EmuEnvState &emuenv, const
         LOG_INFO("Accurate thread scheduling enabled: default-affinity guest threads run one at a time, by priority");
     if (emuenv.kernel.preempt_on_wake)
         LOG_INFO("Preempt-on-wake enabled ({}us window): a thread that wakes a higher-priority thread yields the host CPU so the woken thread runs first", emuenv.kernel.preempt_on_wake_us);
+    static uint32_t game_boots = 0;
+    game_boots++;
+    core_lock_begin_boot(game_boots);
+    guest_assert_begin_boot();
 
     if (!emuenv.kernel.init(emuenv.mem, call_import, emuenv.cfg.current_config.cpu_opt)) {
         LOG_WARN("Failed to init kernel!");

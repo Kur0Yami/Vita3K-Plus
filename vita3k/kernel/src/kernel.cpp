@@ -29,6 +29,7 @@
 #include <cstring>
 #include <kernel/sync_primitives.h>
 #include <mem/ptr.h>
+#include <nids/functions.h>
 #include <util/lock_and_find.h>
 #include <util/log.h>
 
@@ -365,6 +366,20 @@ static std::string describe_wait_target(KernelState &kernel, MemState &mem, cons
     return {};
 }
 
+static std::string recent_imports(const ThreadState &t) {
+    std::string out;
+    const uint8_t pos = t.import_ring_pos;
+    for (int k = 0; k < 16; k++) {
+        const uint32_t nid = t.import_ring[(pos + k) & 15];
+        if (!nid)
+            continue;
+        const uint32_t lr = t.import_ring_lr[(pos + k) & 15];
+        const char *name = import_name(nid);
+        out += std::strcmp(name, "UNRECOGNISED") ? fmt::format(" {}@{:X}", name, lr) : fmt::format(" 0x{:08X}@{:X}", nid, lr);
+    }
+    return out.empty() ? std::string(" none") : out;
+}
+
 void KernelState::log_thread_hang_dump() {
     std::vector<ThreadStatePtr> snapshot;
     {
@@ -437,6 +452,7 @@ void KernelState::log_thread_hang_dump() {
                 }
             }
         }
+        line += fmt::format("\n    signal pending={} | last HLE calls (name@return address), oldest first:", t->signal.pending() ? 1 : 0) + recent_imports(*t);
         LOG_ERROR("HANG DUMP: {}", line);
         dump += line + "\n";
     }
@@ -475,6 +491,25 @@ void KernelState::log_thread_hang_dump() {
                 cur = next;
             }
         }
+    }
+
+    {
+        const std::string core_lock = core_lock_report(*this);
+        LOG_ERROR("HANG DUMP: CORE LOCK: {}", core_lock);
+        dump += "CORE LOCK: " + core_lock;
+    }
+
+    {
+        std::map<SceUID, std::string> names;
+        for (const auto &t : snapshot)
+            names[t->id] = t->name;
+        const std::string signals = signal_event_report([&](const SceUID id) {
+            const auto it = names.find(id);
+            return it == names.end() ? std::string() : it->second;
+        },
+            256);
+        LOG_ERROR("HANG DUMP: SIGNALS (sceKernelWaitSignal/SendSignal, oldest first):{}", signals);
+        dump += "\nSIGNALS:" + signals;
     }
 
     // vita3k.log is truncated on relaunch, so also persist the dump where a restart cannot eat it

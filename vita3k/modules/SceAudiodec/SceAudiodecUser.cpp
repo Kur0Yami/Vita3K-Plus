@@ -157,7 +157,7 @@ static int create_decoder(EmuEnvState &emuenv, SceAudiodecCtrl *ctrl, SceAudiode
         state->decoders[handle] = decoder;
 
         info.channels = decoder->get(DecoderQuery::CHANNELS);
-        info.bit_rate = decoder->get(DecoderQuery::BIT_RATE);
+        info.bit_rate = (decoder->get(DecoderQuery::BIT_RATE) + 500) / 1000;
         info.sample_rate = decoder->get(DecoderQuery::SAMPLE_RATE);
         info.super_frame_size = decoder->get(DecoderQuery::AT9_SUPERFRAME_SIZE);
         info.frames_in_super_frame = decoder->get(DecoderQuery::AT9_FRAMES_IN_SUPERFRAME);
