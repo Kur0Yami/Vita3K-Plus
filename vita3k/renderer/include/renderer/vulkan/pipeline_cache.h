@@ -57,6 +57,21 @@ struct CompileRequest;
 
 using PipelineCompileQueue = moodycamel::BlockingConcurrentQueue<CompileRequest *>;
 
+struct VertexStreamLayout {
+    static constexpr uint32_t MAX_ATTRIBUTES = 32;
+    struct Copy {
+        uint32_t src;
+        uint32_t dst;
+        uint32_t size;
+    };
+    bool repack = false;
+    uint32_t stride = 0;
+    uint32_t record_size = 0;
+    std::array<uint32_t, MAX_ATTRIBUTES> offsets{};
+    std::array<Copy, MAX_ATTRIBUTES> copies{};
+    uint32_t copy_count = 0;
+};
+
 class PipelineCache {
     friend struct VKState;
 
@@ -231,8 +246,8 @@ public:
 
     // true when an attribute offset is past maxVertexInputAttributeOffset
     bool needs_attribute_bindings(const ProgramBinding &vertex_program) const;
-    // true when the stride of the stream leaves one of its attributes unaligned so it is repacked into a multiple of 4
-    bool needs_restride(const ProgramBinding &vertex_program, uint32_t stream_index) const;
+    // the binding stride and attribute offsets of a stream, repacked when an attribute address would not be a multiple of its component size
+    VertexStreamLayout vertex_stream_layout(const ProgramBinding &vertex_program, uint32_t stream_index) const;
 
     void set_async_compilation(bool enable);
 };

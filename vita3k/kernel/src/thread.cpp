@@ -268,6 +268,11 @@ void ThreadState::exit_delete(bool exit) {
     note_signal_event(SIGNAL_DELETE_WAKE, nullptr, id, signal.send() ? 0 : 1);
 }
 
+void ThreadState::stop_for_process_exit() {
+    const std::lock_guard<std::mutex> lock(mutex);
+    stopped_for_process_exit = true;
+}
+
 // Guest execution gate (config: accurate-thread-scheduling).
 namespace {
 std::mutex g_sched_mutex;
@@ -1550,6 +1555,12 @@ void ThreadState::run_loop() {
         while (!delete_requested && !exit_requested && !guest_returned && status == ThreadStatus::run) {
             if (world_stop_requested) {
                 world_stopped = true;
+                guest_sched_release_for_block();
+                update_status(ThreadStatus::suspend);
+                continue;
+            }
+
+            if (stopped_for_process_exit && top_level) {
                 guest_sched_release_for_block();
                 update_status(ThreadStatus::suspend);
                 continue;

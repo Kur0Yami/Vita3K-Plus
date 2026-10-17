@@ -145,6 +145,7 @@ struct ThreadState {
     int start(SceSize arglen, const Ptr<void> argp, bool run_entry_callback = false);
     void exit(SceInt32 status);
     void exit_delete(bool exit = true);
+    void stop_for_process_exit();
 
     void update_status(ThreadStatus status, std::optional<ThreadStatus> expected = std::nullopt);
     bool is_delete_requested() const { return delete_requested; }
@@ -226,6 +227,8 @@ private:
     bool world_stopped = false;
     // Single stepping mode.
     bool single_stepping = false;
+    // Asked for the process to end (sceAppMgrLoadExec, sceKernelExitProcess)
+    bool stopped_for_process_exit = false;
 
     // Number of active run_loop frames. The top-level host thread keeps one
     // frame alive (run_loop()) while parked dormant; callbacks add nested frames.

@@ -117,6 +117,8 @@ bool KernelState::init(MemState &mem, const CallImportFunc &call_import, bool cp
     halt_ptr[1] = 0xBF30; // WFI
     halt_instruction_pc = halt_instruction.get() | 1; // thumb mode pc
 
+    process_exit_requested = false;
+
     return true;
 }
 
@@ -220,6 +222,12 @@ Ptr<Ptr<void>> KernelState::get_thread_tls_addr(MemState &mem, SceUID thread_id,
 }
 
 void KernelState::request_process_exit(int res, std::optional<AppLaunchRequest> relaunch) {
+    if (g_tls_guest_thread)
+        g_tls_guest_thread->stop_for_process_exit();
+
+    if (process_exit_requested.exchange(true))
+        return;
+
     if (process_exit_callback)
         process_exit_callback(res, std::move(relaunch));
 }

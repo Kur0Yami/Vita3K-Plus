@@ -238,6 +238,11 @@ void HostRingBuffer::copy(vk::CommandBuffer cmd_buffer, const uint32_t size, con
         allocator.flushAllocation(buffer.allocation, data_offset + offset, size);
 }
 
+void HostRingBuffer::flush(const uint32_t size) {
+    if (!is_coherent)
+        allocator.flushAllocation(buffer.allocation, data_offset, size);
+}
+
 bool HostRingBuffer::grow(const size_t new_capacity, Buffer &old_buffer) {
     Buffer larger(new_capacity + (buffer.size - capacity));
     try {

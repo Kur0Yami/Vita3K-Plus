@@ -162,6 +162,11 @@ public:
 
     void copy(vk::CommandBuffer cmd_buffer, const uint32_t size, const void *data, const uint32_t offset = 0) override;
 
+    uint8_t *allocation_data() {
+        return static_cast<uint8_t *>(buffer.mapped_data) + data_offset;
+    }
+    void flush(const uint32_t size);
+
     // moves to an empty buffer of new_capacity bytes and hands the old one back (as the GPU may still be reading it)
     bool grow(const size_t new_capacity, Buffer &old_buffer);
 };

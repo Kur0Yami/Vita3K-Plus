@@ -150,19 +150,21 @@ void mid_scene_flush(VKContext &context, const SceGxmNotification notification) 
     }
 }
 
-// Vulkan requires each vertex attribute address, which includes stride * index, to be a multiple of
-// the component size of its format. A stride that is not a multiple of 4 breaks that for 3 of every 4 vertices
-void restride_stream(const uint8_t *&stream, uint32_t &size, uint32_t stride) {
-    const uint32_t new_stride = align(stride, 4);
-    const uint32_t nb_vertex_input = ((size + stride - 1) / stride);
+// Vulkan requires each vertex attribute address to be a multiple of the component size of its format
+uint32_t repacked_size(const uint32_t size, const uint32_t stride, const VertexStreamLayout &layout) {
+    return stride ? (size + stride - 1) / stride * layout.stride : layout.record_size;
+}
 
-    uint8_t *new_data = new uint8_t[nb_vertex_input * new_stride];
+void repack_stream(uint8_t *dst, const uint8_t *stream, const uint32_t size, const uint32_t stride, const VertexStreamLayout &layout) {
+    const uint32_t nb_vertex_input = stride ? (size + stride - 1) / stride : 1;
     for (uint32_t i = 0; i < nb_vertex_input; i++) {
-        memcpy(new_data + new_stride * i, stream + stride * i, stride);
+        for (uint32_t c = 0; c < layout.copy_count; c++) {
+            const VertexStreamLayout::Copy &copy = layout.copies[c];
+            const uint32_t src = stride * i + copy.src;
+            if (src < size)
+                memcpy(dst + layout.stride * i + copy.dst, stream + src, std::min(copy.size, size - src));
+        }
     }
-
-    stream = new_data;
-    size = nb_vertex_input * new_stride;
 }
 
 // when needed, how many descriptor of the given size we allocate for each frame at once
@@ -337,11 +339,14 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
     if (max_stream_idx == 0)
         return;
 
+    std::array<VertexStreamLayout, SCE_GXM_MAX_VERTEX_STREAMS> layouts;
+    for (int i = 0; i < max_stream_idx; i++)
+        layouts[i] = context.state.pipeline_cache.vertex_stream_layout(vertex_program, i);
+
     for (int i = 0; i < max_stream_idx; i++) {
         if (state.vertex_streams[i].data) {
             const bool mapped = context.state.features.enable_memory_mapping;
-            // a stride that leaves an attribute unaligned has to be repacked which means this stream cannot stay mapped
-            const bool restride = context.state.pipeline_cache.needs_restride(vertex_program, i);
+            const bool restride = layouts[i].repack;
             uint32_t stream_size = state.vertex_streams[i].size;
             // by the time we bind the game may already have recycled this block so prefer the copy taken when the scene was kicked
             const uint8_t *snapshot = mapped
@@ -356,16 +361,18 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
                 if (!context.vertex_stream_ring_buffer.handle())
                     context.vertex_stream_ring_buffer.create();
                 const uint8_t *stream = snapshot ? snapshot : state.vertex_streams[i].data.get(mem);
-                if (restride)
-                    restride_stream(stream, stream_size, vertex_program.streams[i].stride);
-
-                context.vertex_ring_make_room(stream_size);
-                context.vertex_stream_ring_buffer.allocate(context.prerender_cmd, stream_size, stream);
+                if (restride) {
+                    const uint32_t repacked = repacked_size(stream_size, vertex_program.streams[i].stride, layouts[i]);
+                    context.vertex_ring_make_room(repacked);
+                    context.vertex_stream_ring_buffer.allocate(repacked);
+                    repack_stream(context.vertex_stream_ring_buffer.allocation_data(), stream, stream_size, vertex_program.streams[i].stride, layouts[i]);
+                    context.vertex_stream_ring_buffer.flush(repacked);
+                } else {
+                    context.vertex_ring_make_room(stream_size);
+                    context.vertex_stream_ring_buffer.allocate(context.prerender_cmd, stream_size, stream);
+                }
                 context.vertex_stream_offsets[i] = context.vertex_stream_ring_buffer.data_offset;
                 context.vertex_stream_buffers[i] = context.vertex_stream_ring_buffer.handle();
-
-                if (restride)
-                    delete[] stream;
             }
 
             state.vertex_streams[i].data = nullptr;
@@ -383,11 +390,12 @@ static void bind_vertex_streams(VKContext &context, MemState &mem, uint32_t inst
     static thread_local std::vector<vk::DeviceSize> offsets;
     buffers.clear();
     offsets.clear();
-    for (const SceGxmVertexAttribute &attribute : vertex_program.attributes) {
+    for (size_t a = 0; a < vertex_program.attributes.size(); a++) {
+        const SceGxmVertexAttribute &attribute = vertex_program.attributes[a];
         if (!vkvert->attribute_infos.contains(attribute.regIndex))
             continue;
         buffers.push_back(context.vertex_stream_buffers[attribute.streamIndex]);
-        offsets.push_back(context.vertex_stream_offsets[attribute.streamIndex] + attribute.offset);
+        offsets.push_back(context.vertex_stream_offsets[attribute.streamIndex] + (a < VertexStreamLayout::MAX_ATTRIBUTES ? layouts[attribute.streamIndex].offsets[a] : attribute.offset));
     }
     context.render_cmd.bindVertexBuffers(0, buffers, offsets);
 }
