@@ -1760,6 +1760,29 @@ uint32_t ThreadState::run_guest_function(Address callback_address, SceSize args,
     return returned_value;
 }
 
+uint32_t ThreadState::run_guest_callback(Address callback_address, const std::vector<uint32_t> &args) {
+    {
+        const std::lock_guard<std::mutex> thread_lock(mutex);
+        if (status != ThreadStatus::dormant || delete_requested)
+            return 0;
+
+        run_start_callback = false;
+        load_context(*cpu, init_cpu_ctx);
+        write_pc(*cpu, callback_address);
+        write_lr(*cpu, kernel.halt_instruction_pc);
+        if (args.size() > 4 && (args.size() - 4) % 2)
+            write_sp(*cpu, read_sp(*cpu) - 4);
+        push_arguments(args);
+        status = ThreadStatus::run;
+        status_cond.notify_one();
+    }
+    guest_sched_release_for_block();
+    std::unique_lock<std::mutex> lock(mutex);
+    while (!status_cond.wait_for(lock, std::chrono::milliseconds(100), [&]() { return status == ThreadStatus::dormant || delete_requested; })) {
+    }
+    return returned_value;
+}
+
 ThreadState::ThreadState(SceUID id, KernelState &kernel, MemState &mem)
     : id(id)
     , kernel(kernel)

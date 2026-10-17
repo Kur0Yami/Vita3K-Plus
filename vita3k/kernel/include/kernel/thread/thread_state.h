@@ -161,6 +161,9 @@ struct ThreadState {
     // args and argp are passed to thread->start as is
     uint32_t run_guest_function(Address callback_address, SceSize args = 0, const Ptr<void> argp = Ptr<void>{});
 
+    // this is called from another thread when this one is dormant
+    uint32_t run_guest_callback(Address callback_address, const std::vector<uint32_t> &args);
+
     void suspend();
     void suspend_and_wait();
     void resume(bool step = false);

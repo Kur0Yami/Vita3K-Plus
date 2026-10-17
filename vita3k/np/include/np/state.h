@@ -22,8 +22,10 @@
 
 #include <mem/util.h> // Address.
 
+#include <condition_variable>
 #include <map>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 struct SceNpServiceStateCallback {
@@ -85,6 +87,9 @@ struct NpMatching2State {
     Address context_cb_arg = 0;
     uint32_t next_ctx_id = 1;
     std::vector<SceNpMatching2ContextEvent> pending;
+    std::condition_variable cond;
+    std::thread host_thread;
+    bool stop = false;
 };
 
 struct NpState {

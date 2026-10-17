@@ -79,12 +79,51 @@ static SceInt32 preempt_user_cores(const SceInt32 affinity) {
     return cores ? cores : SCE_KERNEL_CPU_MASK_USER_ALL;
 }
 
+static int preempt_core_count(const SceInt32 affinity) {
+    const SceInt32 cores = preempt_user_cores(affinity);
+    return ((cores & 0x10000) != 0) + ((cores & 0x20000) != 0) + ((cores & 0x40000) != 0);
+}
+
+static std::vector<ThreadStatePtr> preempt_runnable_threads(KernelState &kernel, const ThreadState *caller) {
+    std::vector<ThreadStatePtr> threads;
+    {
+        const std::lock_guard<std::mutex> lock(kernel.mutex);
+        threads.reserve(kernel.threads.size());
+        for (const auto &[id, thread] : kernel.threads) {
+            if (thread && thread.get() != caller)
+                threads.push_back(thread);
+        }
+    }
+    std::vector<ThreadStatePtr> runnable;
+    for (const ThreadStatePtr &thread : threads) {
+        const std::lock_guard<std::mutex> lock(thread->mutex);
+        if (thread->status == ThreadStatus::run && !thread->is_delete_requested())
+            runnable.push_back(thread);
+    }
+    return runnable;
+}
+
 static void preempt_after_wake(KernelState &kernel, SceUID caller_tid, std::vector<PreemptTarget> &woken) {
     const ThreadStatePtr caller = kernel.get_thread(caller_tid);
     if (!caller || kernel.preempt_on_wake_us <= 0)
         return;
     const SceInt32 caller_cores = preempt_user_cores(caller->affinity_mask);
     woken.erase(std::remove_if(woken.begin(), woken.end(), [&](const PreemptTarget &t) { return t.priority >= caller->priority || !(preempt_user_cores(t.affinity) & caller_cores) || core_lock_shares_core(t.affinity, caller->affinity_mask); }), woken.end());
+    if (woken.empty())
+        return;
+    std::vector<ThreadStatePtr> runnable;
+    bool counted = false;
+    const auto has_free_core = [&](const PreemptTarget &t) {
+        const int cores = preempt_core_count(t.affinity);
+        if (cores < 2)
+            return false;
+        if (!counted) {
+            runnable = preempt_runnable_threads(kernel, caller.get());
+            counted = true;
+        }
+        return std::count_if(runnable.begin(), runnable.end(), [&](const ThreadStatePtr &other) { return other != t.thread; }) <= cores - 2;
+    };
+    woken.erase(std::remove_if(woken.begin(), woken.end(), has_free_core), woken.end());
     if (woken.empty())
         return;
     const auto start = std::chrono::steady_clock::now();

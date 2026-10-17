@@ -18,7 +18,10 @@
 #include <module/module.h>
 
 #include <emuenv/state.h>
+#include <kernel/state.h>
+#include <kernel/thread/thread_state.h>
 #include <np/state.h>
+#include <util/log.h>
 #include <util/tracy.h>
 
 TRACY_MODULE_NAME(SceNpMatching2);
@@ -33,6 +36,43 @@ constexpr uint32_t SCE_NP_MATCHING2_CONTEXT_EVENT_STARTED = 0x6F02;
 constexpr uint32_t SCE_NP_MATCHING2_EVENT_CAUSE_CONTEXT_ACTION = 11;
 // Processing to start the context was aborted, as on a network disconnection
 constexpr uint32_t SCE_NP_COMMUNITY_ERROR_ABORTED = 0x80550707;
+
+constexpr SceInt32 SCE_NP_MATCHING2_THREAD_PRIORITY_DEFAULT = SCE_KERNEL_DEFAULT_PRIORITY_USER;
+constexpr SceSize SCE_NP_MATCHING2_THREAD_STACK_SIZE_DEFAULT = 16 * 1024;
+
+static void matching2_callback_loop(NpMatching2State &matching2, ThreadStatePtr thread) {
+    std::unique_lock<std::mutex> lock(matching2.mutex);
+    while (!matching2.stop) {
+        if (matching2.pending.empty() || !matching2.context_cb_pc) {
+            matching2.cond.wait(lock);
+            continue;
+        }
+        std::vector<SceNpMatching2ContextEvent> events;
+        events.swap(matching2.pending);
+        const Address cb_pc = matching2.context_cb_pc;
+        const Address cb_arg = matching2.context_cb_arg;
+        lock.unlock();
+        for (const SceNpMatching2ContextEvent &event : events)
+            thread->run_guest_callback(cb_pc, { event.ctx_id, event.event, event.cause, event.error_code, cb_arg });
+        lock.lock();
+    }
+}
+
+static void start_callback_thread(EmuEnvState &emuenv, SceInt32 priority, SceInt32 affinity, SceSize stack_size) {
+    NpMatching2State &matching2 = emuenv.np.matching2;
+    if (matching2.host_thread.joinable())
+        return;
+
+    priority = priority ? priority : SCE_NP_MATCHING2_THREAD_PRIORITY_DEFAULT;
+    stack_size = stack_size ? stack_size : SCE_NP_MATCHING2_THREAD_STACK_SIZE_DEFAULT;
+    const ThreadStatePtr thread = emuenv.kernel.create_thread(emuenv.mem, "SceNpMatching2", Ptr<void>(0), priority, affinity, static_cast<int>(stack_size), nullptr);
+    if (!thread) {
+        LOG_ERROR("[NPM2] could not create the Matching2 internal thread (priority 0x{:X}, affinity 0x{:X}, stack 0x{:X})", priority, affinity, stack_size);
+        return;
+    }
+    matching2.stop = false;
+    matching2.host_thread = std::thread(matching2_callback_loop, std::ref(matching2), thread);
+}
 
 EXPORT(int, sceNpMatching2AbortContextStart) {
     return UNIMPLEMENTED();
@@ -52,6 +92,8 @@ EXPORT(int, sceNpMatching2ContextStart, SceUInt32 ctxId, SceUInt32 pad, SceUInt3
     }
 
     matching2.pending.push_back({ ctxId, SCE_NP_MATCHING2_CONTEXT_EVENT_STARTED, SCE_NP_MATCHING2_EVENT_CAUSE_CONTEXT_ACTION, SCE_NP_COMMUNITY_ERROR_ABORTED });
+    start_callback_thread(emuenv, 0, SCE_KERNEL_THREAD_CPU_AFFINITY_MASK_DEFAULT, 0);
+    matching2.cond.notify_one();
     return 0;
 }
 
@@ -131,8 +173,12 @@ EXPORT(int, sceNpMatching2GrantRoomOwner) {
     return UNIMPLEMENTED();
 }
 
-EXPORT(int, sceNpMatching2Init) {
-    return UNIMPLEMENTED();
+EXPORT(int, sceNpMatching2Init, SceSize poolSize, SceInt32 threadPriority, SceInt32 cpuAffinityMask, SceSize threadStackSize) {
+    TRACY_FUNC(sceNpMatching2Init, poolSize, threadPriority, cpuAffinityMask, threadStackSize);
+    NpMatching2State &matching2 = emuenv.np.matching2;
+    std::lock_guard<std::mutex> lock(matching2.mutex);
+    start_callback_thread(emuenv, threadPriority, cpuAffinityMask, threadStackSize);
+    return 0;
 }
 
 EXPORT(int, sceNpMatching2JoinLobby) {
