@@ -6,12 +6,18 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.StringRes
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -21,6 +27,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -118,6 +125,7 @@ internal fun ControllerMappingSections(
     val controllerFamily = connectedGamepads.firstOrNull()?.family ?: ControllerFamily.Standard
     var pendingButtonBinding by remember { mutableStateOf<ButtonBindingRow?>(null) }
     var pendingAxisBinding by remember { mutableStateOf<AxisBindingRow?>(null) }
+    var pendingComboSlot by remember { mutableStateOf<Int?>(null) }
 
     SettingsSectionCard(
         title = stringResource(R.string.settings_controls_connected_title),
@@ -175,6 +183,23 @@ internal fun ControllerMappingSections(
                 title = stringResource(row.labelRes),
                 value = axisLabel(controllerFamily, currentAxisBinding(cfg, row.bindIndex)),
                 onClick = { pendingAxisBinding = row },
+                help = null,
+                onShowHelp = onShowHelp
+            )
+        }
+    }
+
+    SettingsSectionCard(
+        title = "Combo key",
+        summary = "Tahan modifier lalu tekan trigger untuk menekan beberapa tombol Vita sekaligus (maks 5).",
+        help = null,
+        onShowHelp = onShowHelp
+    ) {
+        for (slot in 0 until COMBO_SLOTS) {
+            SettingsActionRow(
+                title = "Combo ${slot + 1}",
+                value = comboSummary(controllerFamily, comboSlot(cfg, slot)),
+                onClick = { pendingComboSlot = slot },
                 help = null,
                 onShowHelp = onShowHelp
             )
@@ -261,6 +286,191 @@ internal fun ControllerMappingSections(
                 pendingAxisBinding = null
             }
         )
+    }
+
+    pendingComboSlot?.let { slot ->
+        ComboEditDialog(
+            slot = slot,
+            family = controllerFamily,
+            initial = comboSlot(cfg, slot),
+            onDismiss = { pendingComboSlot = null },
+            onSave = { combo ->
+                onUpdate { comboBinds = withComboSlot(comboBinds, slot, combo) }
+                pendingComboSlot = null
+            }
+        )
+    }
+}
+
+private const val COMBO_SLOTS = 5
+private const val COMBO_AXIS_BASE = 100
+
+private data class ComboSlot(val modifier: Int, val trigger: Int, val mask: Int) {
+    val isEmpty: Boolean get() = trigger < 0 || mask == 0
+}
+
+private val comboMaskOptions = listOf(
+    "Triangle" to 0x1000, "Circle" to 0x2000, "Cross" to 0x4000, "Square" to 0x8000,
+    "L1" to 0x400, "R1" to 0x800, "L / L2" to 0x100, "R / R2" to 0x200,
+    "D-Pad Up" to 0x10, "D-Pad Right" to 0x20, "D-Pad Down" to 0x40, "D-Pad Left" to 0x80,
+    "Start" to 0x8, "Select" to 0x1, "L3" to 0x2, "R3" to 0x4
+)
+
+private fun comboSlot(cfg: EmulatorConfig, slot: Int): ComboSlot {
+    val b = cfg.comboBinds
+    val i = slot * 3
+    return if (i + 2 < b.size) ComboSlot(b[i], b[i + 1], b[i + 2]) else ComboSlot(-1, -1, 0)
+}
+
+private fun withComboSlot(binds: IntArray, slot: Int, combo: ComboSlot): IntArray {
+    val out = IntArray(COMBO_SLOTS * 3) { if (it % 3 == 2) 0 else -1 }
+    binds.copyInto(out, 0, 0, minOf(binds.size, out.size))
+    val i = slot * 3
+    if (combo.isEmpty) {
+        out[i] = -1
+        out[i + 1] = -1
+        out[i + 2] = 0
+    } else {
+        out[i] = combo.modifier
+        out[i + 1] = combo.trigger
+        out[i + 2] = combo.mask
+    }
+    return out
+}
+
+private fun comboInputOptions(family: ControllerFamily, allowNone: Boolean): List<ManualBindingOption> {
+    val list = mutableListOf<ManualBindingOption>()
+    if (allowNone) list += ManualBindingOption("Tidak ada", -1)
+    list += buttonManualOptions(family)
+    for (id in 15..19) list += ManualBindingOption("Ekstra $id", id)
+    list += ManualBindingOption(axisLabel(family, SDL_GAMEPAD_AXIS_LEFT_TRIGGER), COMBO_AXIS_BASE + SDL_GAMEPAD_AXIS_LEFT_TRIGGER)
+    list += ManualBindingOption(axisLabel(family, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER), COMBO_AXIS_BASE + SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
+    return list
+}
+
+private fun comboInputLabel(family: ControllerFamily, id: Int): String = when {
+    id < 0 -> "Tidak ada"
+    id >= COMBO_AXIS_BASE -> axisLabel(family, id - COMBO_AXIS_BASE)
+    id in 15..19 -> "Ekstra $id"
+    else -> buttonLabel(family, id)
+}
+
+private fun comboSummary(family: ControllerFamily, combo: ComboSlot): String {
+    if (combo.isEmpty) return "Kosong"
+    val buttons = comboMaskOptions.filter { (combo.mask and it.second) != 0 }.joinToString(" + ") { it.first }
+    val prefix = if (combo.modifier >= 0) comboInputLabel(family, combo.modifier) + " + " else ""
+    return prefix + comboInputLabel(family, combo.trigger) + " \u2192 " + buttons
+}
+
+@Composable
+private fun ComboGrid(
+    items: List<Pair<String, Int>>,
+    isSelected: (Int) -> Boolean,
+    onClick: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        items.chunked(4).forEach { rowItems ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                rowItems.forEach { (label, value) ->
+                    val selected = isSelected(value)
+                    Surface(
+                        modifier = Modifier.weight(1f).clickable { onClick(value) },
+                        shape = MaterialTheme.shapes.small,
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surfaceVariant
+                    ) {
+                        Text(
+                            text = label,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 10.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            maxLines = 2
+                        )
+                    }
+                }
+                repeat(4 - rowItems.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComboEditDialog(
+    slot: Int,
+    family: ControllerFamily,
+    initial: ComboSlot,
+    onDismiss: () -> Unit,
+    onSave: (ComboSlot) -> Unit
+) {
+    val modifierOptions = remember(family) { comboInputOptions(family, true) }
+    val triggerOptions = remember(family) { comboInputOptions(family, false) }
+    var modKey by remember { mutableStateOf(initial.modifier) }
+    var trigKey by remember { mutableStateOf(if (initial.trigger >= 0) initial.trigger else triggerOptions.first().value) }
+    var mask by remember { mutableStateOf(initial.mask) }
+
+    Dialog(onDismissRequest = onDismiss) {
+        ApplyDialogDim()
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Combo ${slot + 1}",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Pilih Modifier (opsional), lalu Trigger, lalu tombol Vita yang ditekan bersamaan. Selama combo aktif, trigger dan modifier tidak bekerja sebagai tombol biasa.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Modifier",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                ComboGrid(
+                    items = modifierOptions.map { comboInputLabel(family, it.value) to it.value },
+                    isSelected = { it == modKey },
+                    onClick = { modKey = it }
+                )
+                Text(
+                    text = "Trigger",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                ComboGrid(
+                    items = triggerOptions.map { comboInputLabel(family, it.value) to it.value },
+                    isSelected = { it == trigKey },
+                    onClick = { trigKey = it }
+                )
+                Text(
+                    text = "Tombol Vita yang ditekan",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                ComboGrid(
+                    items = comboMaskOptions,
+                    isSelected = { (mask and it) != 0 },
+                    onClick = { mask = mask xor it }
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { onSave(ComboSlot(-1, -1, 0)) }) { Text("Kosongkan") }
+                    TextButton(onClick = onDismiss) { Text("Batal") }
+                    TextButton(onClick = { onSave(ComboSlot(modKey, trigKey, mask)) }) { Text("Simpan") }
+                }
+            }
+        }
     }
 }
 
