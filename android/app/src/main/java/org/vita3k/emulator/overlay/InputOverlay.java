@@ -12,6 +12,7 @@ import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.util.DisplayMetrics;
@@ -575,6 +576,11 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
               R.drawable.button_start_pressed, ButtonType.BUTTON_START,
               ControlId.start, OVERLAY_MASK_BASIC, layout, layoutBounds, mScale, mOpacity));
 
+      for (int i = 0; i < 5; i++) {
+        overlayButtons.add(initializeComboButton(getContext(), i, ButtonType.COMBO_1 + i,
+            2000 + i, OVERLAY_MASK_BASIC, layout, layoutBounds, mScale, mOpacity));
+      }
+
       overlayButtons.add(initializeOverlayButton(getContext(), R.drawable.button_ps,
             R.drawable.button_ps_pressed, ButtonType.BUTTON_PS,
             ControlId.guide, OVERLAY_MASK_BASIC, layout, layoutBounds, mScale, mOpacity));
@@ -686,6 +692,51 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
    * @param control      Control identifier for the button the InputOverlayDrawableButton represents.
    * @return An {@link InputOverlayDrawableButton} with the correct drawing bounds set.
    */
+  /** Round on-screen button showing the combo number (1..5). */
+  private static Bitmap makeComboBitmap(int size, int index, boolean pressed)
+  {
+    final Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+    final Canvas canvas = new Canvas(bitmap);
+    final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    paint.setColor(pressed ? 0xCCFFFFFF : 0x99202020);
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, paint);
+    paint.setColor(pressed ? 0xFF000000 : 0xFFFFFFFF);
+    paint.setTextAlign(Paint.Align.CENTER);
+    paint.setTextSize(size * 0.5f);
+    paint.setFakeBoldText(true);
+    final float y = size / 2f - (paint.descent() + paint.ascent()) / 2f;
+    canvas.drawText(String.valueOf(index + 1), size / 2f, y, paint);
+    return bitmap;
+  }
+
+  private static InputOverlayDrawableButton initializeComboButton(Context context, int index,
+          int legacyId, int control, int role, OverlayLayout layout, LayoutBounds layoutBounds,
+          float globalScale, int globalOpacity)
+  {
+    final Resources res = context.getResources();
+    final float scale = 0.15f;
+
+    final Bitmap defaultStateBitmap = resizeBitmap(context, makeComboBitmap(256, index, false), scale);
+    final Bitmap pressedStateBitmap = resizeBitmap(context, makeComboBitmap(256, index, true), scale);
+    final InputOverlayDrawableButton overlayDrawable =
+            new InputOverlayDrawableButton(res, defaultStateBitmap, pressedStateBitmap, legacyId,
+                    control, role);
+
+    OverlayPosition position = layout.positionFor(legacyId);
+    if (position == null)
+      position = new OverlayPosition(0f, 0f);
+    int drawableX = Math.round(position.getNormalizedX() * layoutBounds.width);
+    int drawableY = Math.round(position.getNormalizedY() * layoutBounds.height);
+
+    int width = overlayDrawable.getWidth();
+    int height = overlayDrawable.getHeight();
+    overlayDrawable.setBounds(drawableX, drawableY, drawableX + width, drawableY + height);
+    overlayDrawable.setPosition(drawableX, drawableY);
+    overlayDrawable.setOpacity((int) (globalOpacity * 0.01 * 255));
+
+    return overlayDrawable;
+  }
+
   private static InputOverlayDrawableButton initializeOverlayButton(Context context,
           int defaultResId, int pressedResId, int legacyId, int control, int role,
           OverlayLayout layout, LayoutBounds layoutBounds, float globalScale, int globalOpacity)
@@ -1046,6 +1097,11 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
     public static final int TRIGGER_R3 = 25;
     public static final int BUTTON_TOUCH_HIDE = 1023;
     public static final int BUTTON_TOUCH_SWITCH = 1024;
+    public static final int COMBO_1 = 1030;
+    public static final int COMBO_2 = 1031;
+    public static final int COMBO_3 = 1032;
+    public static final int COMBO_4 = 1033;
+    public static final int COMBO_5 = 1034;
   }
 
   // SDL values
@@ -1073,6 +1129,11 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
     // button to switch between front and back touch
     public static final int touch = 1024;
+    public static final int combo_1 = 2000;
+    public static final int combo_2 = 2001;
+    public static final int combo_3 = 2002;
+    public static final int combo_4 = 2003;
+    public static final int combo_5 = 2004;
 
     public static final int axis_left_x = 0;
     public static final int axis_left_y = 1;
