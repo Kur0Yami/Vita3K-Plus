@@ -1,0 +1,7 @@
+#pragma once
+
+// Fork build metadata, dipakai oleh vita3k/util/src/logging.cpp.
+// Header ini tidak ikut ter-commit di repo upstream fork, jadi dibuat di sini
+// supaya build CI (clean checkout) tidak gagal.
+#define FORK_BUILD_SEQ 8
+#define FORK_BUILD_CHANGES "combo keys; grid picker; keystore signing; combo diag; java pad input"
