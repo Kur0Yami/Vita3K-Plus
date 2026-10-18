@@ -35,11 +35,13 @@ static int32_t valid_buffer_index(const int32_t index) {
     return (index >= 0 && index < SCE_NGS_AT9_MAX_BUFFER_PARAMS) ? index : -1;
 }
 
-static int32_t first_buffer_with_data(const SceNgsAT9Params *params, int32_t index) {
+static int32_t first_buffer_with_data(const SceNgsAT9Params *params, int32_t index, const bool null_ends) {
     for (int32_t visited = 0; visited <= SCE_NGS_AT9_MAX_BUFFER_PARAMS && index != -1; visited++) {
         const SceNgsAT9BufferParams &buffer = params->buffer_params[index];
         if (buffer.buffer && buffer.bytes_count > 0)
             return index;
+        if (null_ends && !buffer.buffer)
+            return -1;
         index = valid_buffer_index(buffer.next_buffer_index);
     }
     return -1;
@@ -421,7 +423,7 @@ bool Atrac9Module::process(KernelState &kern, const MemState &mem, const SceUID 
     bool is_finished = false;
     // call decode more data until we either have an error or reached end of data
     while (logical->decoded_pcm.available_frames() < wanted) {
-        const int32_t playable = first_buffer_with_data(params, state->current_buffer);
+        const int32_t playable = first_buffer_with_data(params, state->current_buffer, null_buffer_ends_stream && logical->reached_data);
         if (playable == -1) {
             if (!logical->reached_data)
                 break;

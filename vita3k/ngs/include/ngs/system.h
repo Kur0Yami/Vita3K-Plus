@@ -366,4 +366,6 @@ void voice_definition_init(State &ngs, MemState &mem);
 Ptr<VoiceDefinition> get_voice_definition(State &ngs, MemState &mem, ngs::BussType type);
 void apply_voice_definition(VoiceDefinition *definition, std::vector<std::unique_ptr<ngs::Module>> &mods);
 uint32_t get_voice_definition_size(VoiceDefinition *definition);
+
+inline constexpr bool null_buffer_ends_stream = true;
 } // namespace ngs
