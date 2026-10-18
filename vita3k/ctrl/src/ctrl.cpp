@@ -195,29 +195,106 @@ static uint8_t float_to_byte(float f) {
     return static_cast<uint8_t>(mapped * 255);
 }
 
+// Combo keys (max 5). cfg.combo_binds is a flat list of triples { modifier, trigger, mask }:
+//  - modifier: -1 = none (trigger alone), otherwise an input id (see below). The modifier must be held.
+//  - trigger : input id that fires the combo.
+//  - mask    : SCE_CTRL_* bits (summed) pressed together while the combo is active.
+// Input id: 0..99 = SDL_GamepadButton, 100+n = SDL_GamepadAxis n (e.g. 104 = ZL, 105 = ZR) pressed past 50%.
+// While a combo is active its trigger (and its modifier, if any) stop acting as their normal Vita buttons.
+// A chord (with modifier) takes precedence over a plain combo using the same trigger.
+static constexpr size_t MAX_COMBOS = 5;
+static constexpr int COMBO_NO_MODIFIER = -1;
+static constexpr int COMBO_AXIS_BASE = 100;
+
+struct ComboState {
+    uint32_t mask = 0;
+    uint32_t swallowed_buttons = 0; // bit n = SDL_GamepadButton n is consumed by a combo
+    bool swallow_l2 = false;
+    bool swallow_r2 = false;
+
+    bool is_swallowed(SDL_GamepadButton button) const {
+        const int b = static_cast<int>(button);
+        return b >= 0 && b < 32 && ((swallowed_buttons >> b) & 1u);
+    }
+};
+
+static bool combo_input_pressed(SDL_Gamepad *controller, int id) {
+    if (id >= COMBO_AXIS_BASE)
+        return SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(id - COMBO_AXIS_BASE)) > 0x3FFF;
+    return id >= 0 && SDL_GetGamepadButton(controller, static_cast<SDL_GamepadButton>(id));
+}
+
+static void combo_swallow(const EmuEnvState &emuenv, ComboState &state, int id) {
+    if (id >= COMBO_AXIS_BASE) {
+        const auto &axis_binds = emuenv.cfg.controller_axis_binds;
+        const int axis = id - COMBO_AXIS_BASE;
+        if (axis_binds.size() > 5) {
+            state.swallow_l2 |= (axis_binds[4] == axis);
+            state.swallow_r2 |= (axis_binds[5] == axis);
+        }
+    } else if (id >= 0 && id < 32) {
+        state.swallowed_buttons |= 1u << id;
+    }
+}
+
+static ComboState evaluate_combos(const EmuEnvState &emuenv, SDL_Gamepad *controller) {
+    ComboState state;
+    const auto &c = emuenv.cfg.combo_binds;
+    const size_t count = std::min<size_t>(c.size() / 3, MAX_COMBOS);
+
+    bool active[MAX_COMBOS] = {};
+    // chords first (modifier held + trigger pressed)
+    for (size_t i = 0; i < count; i++) {
+        if (c[i * 3] != COMBO_NO_MODIFIER && combo_input_pressed(controller, c[i * 3]) && combo_input_pressed(controller, c[i * 3 + 1]))
+            active[i] = true;
+    }
+    // plain combos, unless a chord already took the same trigger
+    for (size_t i = 0; i < count; i++) {
+        if (c[i * 3] != COMBO_NO_MODIFIER || !combo_input_pressed(controller, c[i * 3 + 1]))
+            continue;
+        bool taken = false;
+        for (size_t j = 0; j < count; j++)
+            taken |= active[j] && c[j * 3 + 1] == c[i * 3 + 1];
+        active[i] = !taken;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (!active[i])
+            continue;
+        state.mask |= static_cast<uint32_t>(c[i * 3 + 2]);
+        combo_swallow(emuenv, state, c[i * 3 + 1]);
+        if (c[i * 3] != COMBO_NO_MODIFIER)
+            combo_swallow(emuenv, state, c[i * 3]);
+    }
+    return state;
+}
+
 static void apply_controller(EmuEnvState &emuenv, uint32_t *buttons, float axes[4], SDL_Gamepad *controller, bool ext) {
     const auto &axis_binds = emuenv.cfg.controller_axis_binds;
+    const ComboState combo = evaluate_combos(emuenv, controller);
 
     if (ext) {
         for (const auto &binding : get_controller_bindings_ext(emuenv)) {
-            if (SDL_GetGamepadButton(controller, binding.controller)) {
+            if (SDL_GetGamepadButton(controller, binding.controller) && !combo.is_swallowed(binding.controller)) {
                 *buttons |= binding.button;
             }
         }
 
-        if (SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[4])) > 0x3FFF) {
+        if (!combo.swallow_l2 && SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[4])) > 0x3FFF) {
             *buttons |= SCE_CTRL_L2;
         }
-        if (SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[5])) > 0x3FFF) {
+        if (!combo.swallow_r2 && SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[5])) > 0x3FFF) {
             *buttons |= SCE_CTRL_R2;
         }
     } else {
         for (const auto &binding : get_controller_bindings(emuenv)) {
-            if (SDL_GetGamepadButton(controller, binding.controller)) {
+            if (SDL_GetGamepadButton(controller, binding.controller) && !combo.is_swallowed(binding.controller)) {
                 *buttons |= binding.button;
             }
         }
     }
+
+    *buttons |= combo.mask;
 
     auto &analog_multiplier = emuenv.cfg.controller_analog_multiplier;
     axes[0] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[0])), analog_multiplier);

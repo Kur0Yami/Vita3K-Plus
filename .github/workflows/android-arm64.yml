@@ -1,0 +1,84 @@
+name: Android arm64 APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-arm64:
+    name: Android arm64
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Restrict build to arm64
+        run: |
+          grep -q 'abiFilters "arm64-v8a", "x86_64"' android/app/build.gradle
+          sed -i 's/abiFilters "arm64-v8a", "x86_64"/abiFilters "arm64-v8a"/' android/app/build.gradle
+          grep -q 'arm64-android x64-android' .ci/setup-android.sh
+          sed -i 's/arm64-android x64-android/arm64-android/' .ci/setup-android.sh
+
+      - name: Restore native dependency cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            /usr/local/share/vcpkg/installed
+            /usr/local/share/vcpkg/packages
+          key: cache-android-arm64-${{ hashFiles('CMakeLists.txt', 'cmake/**', '.ci/**', 'android/app/build.gradle', 'vcpkg.json') }}
+          restore-keys: |
+            cache-android-arm64-
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          add-job-summary: on-failure
+          cache-provider: basic
+          validate-wrappers: false
+
+      - name: Set up Android SDK tools
+        uses: android-actions/setup-android@v4
+
+      - name: Set up Android build environment
+        env:
+          VCPKG_ROOT: /usr/local/share/vcpkg
+        run: bash ./.ci/setup-android.sh
+
+      - uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: android-arm64
+
+      - name: Decode Android keystore (optional)
+        env:
+          KEYSTORE_ENCODED: ${{ secrets.KEYSTORE }}
+        run: |
+          if [ -n "$KEYSTORE_ENCODED" ]; then
+            echo "$KEYSTORE_ENCODED" | base64 --decode > /home/runner/keystore.jks
+          fi
+
+      - name: Build APK
+        env:
+          SIGNING_STORE_PATH: /home/runner/keystore.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          VCPKG_ROOT: /usr/local/share/vcpkg
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+        run: bash ./.ci/build-android.sh artifacts/vita3k-android-arm64
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: vita3k-plus-android-arm64
+          path: artifacts/vita3k-android-arm64/app.apk
