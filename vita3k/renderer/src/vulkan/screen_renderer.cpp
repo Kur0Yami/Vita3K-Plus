@@ -253,6 +253,8 @@ void ScreenRenderer::create_swapchain() {
     }
 
     confirmed_window_size = vk::Extent2D{};
+    swapchain_surface_extent = surface_capabilities.currentExtent;
+    surface_check_countdown = 15;
     if (extent.width == 0 || extent.height == 0)
         return;
 
@@ -736,10 +738,19 @@ bool ScreenRenderer::ensure_swapchain() {
         return false;
 
     if (!need_rebuild && !need_surface_recreate && swapchain) {
-        // A one-frame disagreement between what Vulkan reports as the surface extent and what the window reports as its client size is not a resize
-        if (!note_size_mismatch(!surface_matches_window_size()))
-            return true;
-        rebuild_reason = "persistent window size mismatch";
+#ifdef __ANDROID__
+        const bool surface_changed = android_surface_changed();
+#else
+        constexpr bool surface_changed = false;
+#endif
+        if (surface_changed) {
+            rebuild_reason = "surface resized";
+        } else {
+            // A one-frame disagreement between what Vulkan reports as the surface extent and what the window reports as its client size is not a resize
+            if (!note_size_mismatch(!surface_matches_window_size()))
+                return true;
+            rebuild_reason = "persistent window size mismatch";
+        }
     }
 
     if (!rebuild_swapchain_if_visible()) {
@@ -820,9 +831,28 @@ bool ScreenRenderer::surface_matches_window_size() {
     }
     if (surface_extent.width == std::numeric_limits<uint32_t>::max() || surface_extent != extent)
         return false;
+#ifdef __ANDROID__
+    // a window of the other orientation is a rotation the swapchain has not followed (it's never a scaling difference)
+    if ((window_size.width > window_size.height) != (extent.width > extent.height))
+        return false;
+#endif
 
     confirmed_window_size = window_size;
     return true;
 }
+
+#ifdef __ANDROID__
+bool ScreenRenderer::android_surface_changed() {
+    if (--surface_check_countdown > 0)
+        return false;
+    surface_check_countdown = 15;
+
+    try {
+        return state.physical_device.getSurfaceCapabilitiesKHR(surface).currentExtent != swapchain_surface_extent;
+    } catch (const vk::SystemError &) {
+        return false;
+    }
+}
+#endif
 
 } // namespace renderer::vulkan
