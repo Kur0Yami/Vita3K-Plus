@@ -19,9 +19,87 @@ import androidx.compose.ui.unit.dp
 import org.vita3k.emulator.ConnectedGamepad
 import org.vita3k.emulator.R
 import org.vita3k.emulator.data.EmulatorConfig
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.vita3k.emulator.overlay.OverlayConfig
+import org.vita3k.emulator.overlay.OverlayTheme
+import org.vita3k.emulator.overlay.InputOverlay
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Text
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.fillMaxWidth
 
 @Composable
+@Composable
+private fun OverlayButtonTuningRows() {
+    val buttons = listOf(
+        "Cross" to InputOverlay.ButtonType.BUTTON_CROSS,
+        "Circle" to InputOverlay.ButtonType.BUTTON_CIRCLE,
+        "Square" to InputOverlay.ButtonType.BUTTON_SQUARE,
+        "Triangle" to InputOverlay.ButtonType.BUTTON_TRIANGLE,
+        "Select" to InputOverlay.ButtonType.BUTTON_SELECT,
+        "Start" to InputOverlay.ButtonType.BUTTON_START,
+        "PS" to InputOverlay.ButtonType.BUTTON_PS,
+        "L1" to InputOverlay.ButtonType.TRIGGER_L,
+        "R1" to InputOverlay.ButtonType.TRIGGER_R,
+        "L2" to InputOverlay.ButtonType.TRIGGER_L2,
+        "R2" to InputOverlay.ButtonType.TRIGGER_R2,
+        "L3" to InputOverlay.ButtonType.TRIGGER_L3,
+        "R3" to InputOverlay.ButtonType.TRIGGER_R3,
+        "D-pad" to InputOverlay.ButtonType.DPAD_UP,
+        "Stick kiri" to InputOverlay.ButtonType.STICK_LEFT,
+        "Stick kanan" to InputOverlay.ButtonType.STICK_RIGHT,
+        "Combo 1" to InputOverlay.ButtonType.COMBO_1,
+        "Combo 2" to InputOverlay.ButtonType.COMBO_2,
+        "Combo 3" to InputOverlay.ButtonType.COMBO_3,
+        "Combo 4" to InputOverlay.ButtonType.COMBO_4,
+        "Combo 5" to InputOverlay.ButtonType.COMBO_5
+    )
+    buttons.forEach { (label, legacyId) -> OverlayButtonTuningRow(label, legacyId) }
+}
+
+@Composable
+private fun OverlayButtonTuningRow(label: String, legacyId: Int) {
+    val context = LocalContext.current
+    var hidden by remember(legacyId) { mutableStateOf(OverlayTheme.isHidden(context, legacyId)) }
+    var scale by remember(legacyId) { mutableStateOf(OverlayTheme.getScale(context, legacyId)) }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row {
+            Checkbox(
+                checked = hidden,
+                onCheckedChange = {
+                    hidden = it
+                    OverlayTheme.setHidden(context, legacyId, it)
+                }
+            )
+            Text(text = if (hidden) "$label (disembunyikan)" else label)
+        }
+        Slider(
+            value = scale,
+            onValueChange = {
+                scale = it
+                OverlayTheme.setScale(context, legacyId, it)
+            },
+            valueRange = 0.5f..1.5f,
+            enabled = !hidden
+        )
+        Text(text = "Skala ${(scale * 100).toInt()}%")
+    }
+}
+
 internal fun OverlaySettingsSection(
     cfg: EmulatorConfig,
     overlayConfig: OverlayConfig,
@@ -102,6 +180,45 @@ internal fun OverlaySettingsRows(
             }
         }
 
+        OverlayButtonTuningRows()
+        val themeContext = LocalContext.current
+        val themeScope = rememberCoroutineScope()
+        var themeName by remember { mutableStateOf(OverlayTheme.getActive(themeContext)) }
+        // The picker needs a ComponentActivity host; inside the game (SDLActivity) these rows are hidden.
+        if (themeContext is androidx.activity.ComponentActivity) {
+        val themePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) {
+                themeScope.launch(Dispatchers.IO) {
+                    val name = OverlayTheme.importZip(themeContext, uri)
+                    withContext(Dispatchers.Main) {
+                        if (name != null) {
+                            themeName = name
+                            Toast.makeText(themeContext, "Tema \"$name\" diterapkan", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(themeContext, "Zip tema tidak berisi PNG yang valid", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        }
+        SettingsActionRow(
+            title = "Import tema tombol (zip)",
+            value = if (themeName.isEmpty()) "Bawaan" else themeName,
+            onClick = { themePicker.launch("application/zip") },
+            help = null,
+            onShowHelp = onShowHelp
+        )
+        SettingsActionRow(
+            title = "Pakai tema bawaan",
+            value = "Hapus tema yang dipilih",
+            onClick = {
+                OverlayTheme.setActive(themeContext, "")
+                themeName = ""
+            },
+            help = null,
+            onShowHelp = onShowHelp
+        )
+        }
         SettingsToggleRow(
             title = stringResource(R.string.settings_controls_show),
             checked = overlayConfig.controlsVisible,
