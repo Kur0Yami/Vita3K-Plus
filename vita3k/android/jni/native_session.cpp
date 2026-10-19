@@ -9,6 +9,7 @@
 #include "android_state.h"
 
 #include <app/functions.h>
+#include <ctrl/java_pad.h>
 #include <ime/keyboard.h>
 #include <io/state.h>
 #include <motion/functions.h>
@@ -90,6 +91,16 @@ Java_org_vita3k_emulator_Emulator_setNativeDisplayRotation(JNIEnv *, jobject, ji
         return;
 
     set_display_rotation(emuenv->motion, rotation);
+}
+
+JNIEXPORT void JNICALL
+Java_org_vita3k_emulator_NativeLib_setJavaPadButton(JNIEnv *, jclass, jint button, jboolean down) {
+    ctrl::java_pad::set_button(button, down == JNI_TRUE);
+}
+
+JNIEXPORT void JNICALL
+Java_org_vita3k_emulator_NativeLib_setJavaPadAxis(JNIEnv *, jclass, jint axis, jfloat value) {
+    ctrl::java_pad::set_axis(axis, value);
 }
 
 JNIEXPORT jboolean JNICALL

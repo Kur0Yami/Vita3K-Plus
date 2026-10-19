@@ -12,7 +12,9 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.InputDevice;
+import android.view.InputDevice;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.ViewGroup;
@@ -65,6 +67,7 @@ import org.vita3k.emulator.ui.screens.emulation.NativeImeOverlayHost;
 import org.vita3k.emulator.ui.screens.emulation.EmulationPauseMenuHost;
 import org.vita3k.emulator.ui.viewmodel.EmulationSessionViewModel;
 import org.vita3k.emulator.ui.viewmodel.SettingsViewModel;
+import org.vita3k.emulator.ui.screens.settings.ControllerMappingSettingsKt;
 
 public class Emulator extends SDLActivity
         implements InputManager.InputDeviceListener, LifecycleOwner, SavedStateRegistryOwner, ViewModelStoreOwner
@@ -352,11 +355,67 @@ public class Emulator extends SDLActivity
             reclaimGameFocus("key " + KeyEvent.keyCodeToString(event.getKeyCode()), event.getDeviceId());
         }
 
+        if (event.getKeyCode() != KeyEvent.KEYCODE_BUTTON_MODE)
+            forwardJavaPadKey(event);
         return super.dispatchKeyEvent(event);
+    }
+
+    private void forwardJavaPadKey(KeyEvent event) {
+        final int action = event.getAction();
+        if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP)
+            return;
+        if (action == KeyEvent.ACTION_DOWN && event.getRepeatCount() > 0)
+            return;
+        final Integer button = ControllerMappingSettingsKt.keyCodeToSdlButton(event.getKeyCode());
+        if (button == null)
+            return;
+        try {
+            NativeLib.INSTANCE.setJavaPadButton(button, action == KeyEvent.ACTION_DOWN);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private float lastHatX;
+    private float lastHatY;
+
+    private void forwardJavaPadAxes(MotionEvent e) {
+        float rx = e.getAxisValue(MotionEvent.AXIS_RX);
+        if (rx == 0f) rx = e.getAxisValue(MotionEvent.AXIS_Z);
+        float ry = e.getAxisValue(MotionEvent.AXIS_RY);
+        if (ry == 0f) ry = e.getAxisValue(MotionEvent.AXIS_RZ);
+        float lt = e.getAxisValue(MotionEvent.AXIS_LTRIGGER);
+        if (lt == 0f) lt = e.getAxisValue(MotionEvent.AXIS_BRAKE);
+        float rt = e.getAxisValue(MotionEvent.AXIS_RTRIGGER);
+        if (rt == 0f) rt = e.getAxisValue(MotionEvent.AXIS_GAS);
+        try {
+            NativeLib.INSTANCE.setJavaPadAxis(0, e.getAxisValue(MotionEvent.AXIS_X));
+            NativeLib.INSTANCE.setJavaPadAxis(1, e.getAxisValue(MotionEvent.AXIS_Y));
+            NativeLib.INSTANCE.setJavaPadAxis(2, rx);
+            NativeLib.INSTANCE.setJavaPadAxis(3, ry);
+            NativeLib.INSTANCE.setJavaPadAxis(4, lt);
+            NativeLib.INSTANCE.setJavaPadAxis(5, rt);
+            // D-pad on many Bluetooth pads is reported as HAT axes, not KEYCODE_DPAD_*.
+            // Only send when the hat changes, so stick motion does not clear D-pad keys.
+            final float hx = e.getAxisValue(MotionEvent.AXIS_HAT_X);
+            final float hy = e.getAxisValue(MotionEvent.AXIS_HAT_Y);
+            if (hx != lastHatX) {
+                lastHatX = hx;
+                NativeLib.INSTANCE.setJavaPadButton(13, hx < -0.5f); // DPAD_LEFT
+                NativeLib.INSTANCE.setJavaPadButton(14, hx > 0.5f);  // DPAD_RIGHT
+            }
+            if (hy != lastHatY) {
+                lastHatY = hy;
+                NativeLib.INSTANCE.setJavaPadButton(11, hy < -0.5f); // DPAD_UP
+                NativeLib.INSTANCE.setJavaPadButton(12, hy > 0.5f);  // DPAD_DOWN
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if ((event.getSource() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)
+            forwardJavaPadAxes(event);
         if (isControllerSource(event.getSource()) && mSurface != null && !mSurface.hasFocus()) {
             if (gameOwnsControllerInput()) {
                 reclaimGameFocus("stick", event.getDeviceId());
