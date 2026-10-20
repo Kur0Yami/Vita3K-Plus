@@ -1,33 +1,55 @@
 name: extract-enhanced-patch
-on: workflow_dispatch
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fixed-1.3]
+    paths:
+      - '.github/workflows/extract-savestate-patch.yml'
+
+permissions:
+  contents: read
+
 jobs:
   extract:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout fixed-1.3 (full history)
+        uses: actions/checkout@v4
         with:
+          ref: fixed-1.3
           fetch-depth: 0
-      - name: Fetch Enhanced + upstream
+
+      - name: Fetch Enhanced fork + upstream Vita3K
         run: |
           git remote add enh https://github.com/mohawku-bit/Vita3K-Enhanced-Unofficial.git
           git remote add up https://github.com/Vita3K/Vita3K.git
           git fetch enh master
           git fetch up master
-      - name: Generate diff vs upstream base
+          git cat-file -e 496939b602703951277263c7b3e60a9ae36879c1
+
+      - name: Generate diff (upstream base -> Enhanced)
         run: |
-          mkdir out
+          mkdir -p out
           BASE=496939b602703951277263c7b3e60a9ae36879c1
-          git diff --stat $BASE enh/master > out/diffstat.txt
+          git diff --stat=200 $BASE enh/master > out/diffstat.txt
           git diff --name-status $BASE enh/master > out/files.txt
           git diff --binary $BASE enh/master -- . ':!.github' ':!_readme' ':!docs' > out/enhanced-full.patch
-      - name: Dry-run apply on this branch
+          ls -l out
+
+      - name: Dry-run apply on fixed-1.3 (runner only, nothing is pushed)
         run: |
-          git config user.email ci@example.com
-          git config user.name ci
+          git config user.email "ci@example.com"
+          git config user.name "ci"
           git apply --reject --whitespace=nowarn out/enhanced-full.patch 2> out/apply-log.txt || true
-          find . -name '*.rej' -not -path './.git/*' > out/rejected-files.txt
-          mkdir -p out/rej && while read f; do cp --parents "$f" out/rej/; done < out/rejected-files.txt
-      - uses: actions/upload-artifact@v4
+          find . -name '*.rej' -not -path './.git/*' > out/rejected-files.txt || true
+          mkdir -p out/rej
+          while read -r f; do cp --parents "$f" out/rej/; done < out/rejected-files.txt || true
+          echo "Jumlah file ditolak (.rej): $(wc -l < out/rejected-files.txt)"
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: enhanced-patch
           path: out/
