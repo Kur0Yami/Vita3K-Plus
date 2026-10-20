@@ -34,7 +34,7 @@ jobs:
           BASE=496939b602703951277263c7b3e60a9ae36879c1
           git diff --stat=200 $BASE enh/master > out/diffstat.txt
           git diff --name-status $BASE enh/master > out/files.txt
-          git diff --binary $BASE enh/master -- . ':!.github' ':!_readme' ':!docs' > out/enhanced-full.patch
+          git diff --binary $BASE enh/master -- . ':(exclude).github' ':(exclude)_readme' ':(exclude)docs' > out/enhanced-full.patch
           ls -l out
 
       - name: Dry-run apply on fixed-1.3 (runner only, nothing is pushed)
