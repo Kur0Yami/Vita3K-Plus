@@ -170,6 +170,9 @@ if(ANDROID)
 		android/jni/native_install.cpp
 		android/jni/native_session.cpp
 		android/jni/input_overlay.cpp
+		android/jni/cheat_psv.cpp
+		android/jni/cheat_core.cpp
+		android/jni/native_cheat.cpp
 		android/jni/ime.cpp
 		interface.cpp
 		performance.cpp
