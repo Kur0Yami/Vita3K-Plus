@@ -19,6 +19,7 @@
 
 #include <vkutil/objects.h>
 
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -67,6 +68,7 @@ protected:
     // file name inside shaders-builtin/vulkan
     virtual std::string_view get_vertex_name();
     virtual std::string_view get_fragment_name();
+    virtual vk::ShaderModule load_fragment_shader(const std::string &builtin_file);
     virtual vk::Sampler create_sampler() = 0;
 
 public:

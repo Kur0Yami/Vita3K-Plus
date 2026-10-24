@@ -18,6 +18,7 @@
 #include <ctrl/ctrl.h>
 #include <ctrl/functions.h>
 #include <ctrl/state.h>
+#include <ctrl/java_pad.h>
 
 #include <config/state.h>
 #include <display/functions.h>
@@ -30,8 +31,13 @@
 #endif
 
 #include <algorithm>
+#include <algorithm>
 #include <cmath>
 #include <set>
+#include <atomic>
+#include <cstdint>
+#include <mutex>
+#include <vector>
 #include <string>
 
 static int reserve_port(CtrlState &state) {
@@ -284,35 +290,154 @@ static uint8_t float_to_byte(float f) {
     return static_cast<uint8_t>(std::lround((clamped_f + 1.0f) * 127.5f));
 }
 
+// Combo keys (max 5). cfg.combo_binds is a flat list of triples { modifier, trigger, mask }:
+//  - modifier: -1 = none (trigger alone), otherwise an input id (see below). The modifier must be held.
+//  - trigger : input id that fires the combo.
+//  - mask    : SCE_CTRL_* bits (summed) pressed together while the combo is active.
+// Input id: 0..99 = SDL_GamepadButton, 100+n = SDL_GamepadAxis n (e.g. 104 = ZL, 105 = ZR) pressed past 50%.
+// While a combo is active its trigger (and its modifier, if any) stop acting as their normal Vita buttons.
+// A chord (with modifier) takes precedence over a plain combo using the same trigger.
+static constexpr size_t MAX_COMBOS = 5;
+static constexpr int COMBO_NO_MODIFIER = -1;
+static constexpr int COMBO_AXIS_BASE = 100;
+
+struct ComboState {
+    uint32_t mask = 0;
+    uint32_t swallowed_buttons = 0; // bit n = SDL_GamepadButton n is consumed by a combo
+    bool swallow_l2 = false;
+    bool swallow_r2 = false;
+
+    bool is_swallowed(SDL_GamepadButton button) const {
+        const int b = static_cast<int>(button);
+        return b >= 0 && b < 32 && ((swallowed_buttons >> b) & 1u);
+    }
+};
+
+static bool pad_button(SDL_Gamepad *controller, int id) {
+    if (controller)
+        return id >= 0 && SDL_GetGamepadButton(controller, static_cast<SDL_GamepadButton>(id));
+    return ctrl::java_pad::button(id);
+}
+
+static int16_t pad_axis(SDL_Gamepad *controller, int axis) {
+    if (controller)
+        return SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis));
+    return ctrl::java_pad::axis(axis);
+}
+
+static bool combo_input_pressed(SDL_Gamepad *controller, int id) {
+    if (id >= COMBO_AXIS_BASE)
+        return pad_axis(controller, id - COMBO_AXIS_BASE) > 0x3FFF;
+    return pad_button(controller, id);
+}
+
+static void combo_swallow(const EmuEnvState &emuenv, ComboState &state, int id) {
+    if (id >= COMBO_AXIS_BASE) {
+        const auto &axis_binds = emuenv.cfg.controller_axis_binds;
+        const int axis = id - COMBO_AXIS_BASE;
+        if (axis_binds.size() > 5) {
+            state.swallow_l2 |= (axis_binds[4] == axis);
+            state.swallow_r2 |= (axis_binds[5] == axis);
+        }
+    } else if (id >= 0 && id < 32) {
+        state.swallowed_buttons |= 1u << id;
+    }
+}
+
+static ComboState evaluate_combos(const EmuEnvState &emuenv, SDL_Gamepad *controller) {
+    ComboState state;
+    const auto &c = emuenv.cfg.combo_binds;
+    const size_t count = std::min<size_t>(c.size() / 3, MAX_COMBOS);
+
+    bool active[MAX_COMBOS] = {};
+    // chords first (modifier held + trigger pressed)
+    for (size_t i = 0; i < count; i++) {
+        if (c[i * 3] != COMBO_NO_MODIFIER && combo_input_pressed(controller, c[i * 3]) && combo_input_pressed(controller, c[i * 3 + 1]))
+            active[i] = true;
+    }
+    // plain combos, unless a chord already took the same trigger
+    for (size_t i = 0; i < count; i++) {
+        if (c[i * 3] != COMBO_NO_MODIFIER || !combo_input_pressed(controller, c[i * 3 + 1]))
+            continue;
+        bool taken = false;
+        for (size_t j = 0; j < count; j++)
+            taken |= active[j] && c[j * 3 + 1] == c[i * 3 + 1];
+        active[i] = !taken;
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        if (!active[i])
+            continue;
+        state.mask |= static_cast<uint32_t>(c[i * 3 + 2]);
+        combo_swallow(emuenv, state, c[i * 3 + 1]);
+        if (c[i * 3] != COMBO_NO_MODIFIER)
+            combo_swallow(emuenv, state, c[i * 3]);
+    }
+    // On-screen combo buttons: press the combo slot's Vita buttons directly (no modifier needed).
+    for (size_t k = 0; k < count; k++) {
+        if (ctrl::java_pad::virtual_combo(static_cast<int>(k)))
+            state.mask |= static_cast<uint32_t>(c[k * 3 + 2]);
+    }
+    {
+        // [COMBO] diagnostics: what native received, and when a trigger / mask changes.
+        static bool logged_config = false;
+        static uint32_t logged_pressed = 0xFFFFFFFFu;
+        static uint32_t logged_mask = 0xFFFFFFFFu;
+        if (!logged_config) {
+            logged_config = true;
+            LOG_INFO("[COMBO] cfg.combo_binds size {} usable slots {}", c.size(), count);
+            for (size_t k = 0; k < count; k++)
+                LOG_INFO("[COMBO] slot {}: modifier {} trigger {} mask {:#x}", k, c[k * 3], c[k * 3 + 1], c[k * 3 + 2]);
+        }
+        uint32_t pressed = 0;
+        for (size_t k = 0; k < count; k++) {
+            if (combo_input_pressed(controller, c[k * 3 + 1]))
+                pressed |= 1u << k;
+        }
+        if (pressed != logged_pressed) {
+            logged_pressed = pressed;
+            LOG_INFO("[COMBO] trigger pressed bits {:#x}", pressed);
+        }
+        if (state.mask != logged_mask) {
+            logged_mask = state.mask;
+            LOG_INFO("[COMBO] active mask {:#x}", state.mask);
+        }
+    }
+    return state;
+}
+
 static void apply_controller(EmuEnvState &emuenv, uint32_t *buttons, float axes[4], SDL_Gamepad *controller, bool ext) {
     const auto &axis_binds = emuenv.cfg.controller_axis_binds;
+    const ComboState combo = evaluate_combos(emuenv, controller);
 
     if (ext) {
         for (const auto &binding : get_controller_bindings_ext(emuenv)) {
-            if (SDL_GetGamepadButton(controller, binding.controller)) {
+            if (pad_button(controller, binding.controller) && !combo.is_swallowed(binding.controller)) {
                 *buttons |= binding.button;
             }
         }
 
-        if (SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[4])) > 0x3FFF) {
+        if (!combo.swallow_l2 && pad_axis(controller, axis_binds[4]) > 0x3FFF) {
             *buttons |= SCE_CTRL_L2;
         }
-        if (SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[5])) > 0x3FFF) {
+        if (!combo.swallow_r2 && pad_axis(controller, axis_binds[5]) > 0x3FFF) {
             *buttons |= SCE_CTRL_R2;
         }
     } else {
         for (const auto &binding : get_controller_bindings(emuenv)) {
-            if (SDL_GetGamepadButton(controller, binding.controller)) {
+            if (pad_button(controller, binding.controller) && !combo.is_swallowed(binding.controller)) {
                 *buttons |= binding.button;
             }
         }
     }
 
+    *buttons |= combo.mask;
+
     auto &analog_multiplier = emuenv.cfg.controller_analog_multiplier;
-    axes[0] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[0])), analog_multiplier);
-    axes[1] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[1])), analog_multiplier);
-    axes[2] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[2])), analog_multiplier);
-    axes[3] += axis_to_axis(SDL_GetGamepadAxis(controller, static_cast<SDL_GamepadAxis>(axis_binds[3])), analog_multiplier);
+    axes[0] += axis_to_axis(pad_axis(controller, axis_binds[0]), analog_multiplier);
+    axes[1] += axis_to_axis(pad_axis(controller, axis_binds[1]), analog_multiplier);
+    axes[2] += axis_to_axis(pad_axis(controller, axis_binds[2]), analog_multiplier);
+    axes[3] += axis_to_axis(pad_axis(controller, axis_binds[3]), analog_multiplier);
 }
 
 static void retrieve_ctrl_data(EmuEnvState &emuenv, int port, bool is_v2, bool negative, bool from_ext_function, SceUInt32 &buttons, SceUInt8 &lx, SceUInt8 &ly, SceUInt8 &rx, SceUInt8 &ry) {
@@ -362,13 +487,97 @@ static void retrieve_ctrl_data(EmuEnvState &emuenv, int port, bool is_v2, bool n
     } else if (port == 1) {
         // If not in PSTV mode, every controller input is considered as a port 1 input
         apply_keyboard(&buttons, axes.data(), is_v2, emuenv);
+        bool has_sdl_gamepad = false;
         for (const auto &[_, controller] : state.controllers) {
+            has_sdl_gamepad = true;
             apply_controller(emuenv, &buttons, axes.data(), controller.controller.get(), is_v2);
         }
+        // No SDL gamepad: use the gamepad state forwarded from Android key/motion events (Emulator.java).
+        if (!has_sdl_gamepad && (ctrl::java_pad::active.load(std::memory_order_relaxed) || ctrl::java_pad::any_virtual_combo()))
+            apply_controller(emuenv, &buttons, axes.data(), nullptr, is_v2);
     }
 
     reset_axes();
 }
+
+// Macro recorder: merekam dan memutar ulang sampel input pad.
+// Satu sampel = satu pembacaan sceCtrl non-peek (per vblank), jadi pemutaran mengikuti
+// ritme game dan tidak ikut terpengaruh FPS yang turun-naik.
+namespace macro {
+struct Sample {
+    uint32_t buttons;
+    uint8_t lx, ly, rx, ry;
+};
+
+enum Mode : int { MODE_IDLE = 0, MODE_RECORDING = 1, MODE_PLAYING = 2 };
+
+static std::mutex mtx;
+static std::vector<Sample> rec;
+static int mode = MODE_IDLE;
+static size_t play_pos = 0;
+static bool play_loop = false;
+
+void start_record() {
+    std::lock_guard<std::mutex> lk(mtx);
+    rec.clear();
+    play_pos = 0;
+    mode = MODE_RECORDING;
+}
+
+void stop_record() {
+    std::lock_guard<std::mutex> lk(mtx);
+    if (mode == MODE_RECORDING)
+        mode = MODE_IDLE;
+}
+
+void start_play(bool loop) {
+    std::lock_guard<std::mutex> lk(mtx);
+    if (rec.empty())
+        return;
+    play_pos = 0;
+    play_loop = loop;
+    mode = MODE_PLAYING;
+}
+
+void stop_play() {
+    std::lock_guard<std::mutex> lk(mtx);
+    if (mode == MODE_PLAYING)
+        mode = MODE_IDLE;
+}
+
+int get_mode() {
+    std::lock_guard<std::mutex> lk(mtx);
+    return mode;
+}
+
+size_t length() {
+    std::lock_guard<std::mutex> lk(mtx);
+    return rec.size();
+}
+
+// Dipanggil dari ctrl_get untuk setiap sampel yang dikembalikan ke game.
+void on_sample(SceUInt32 &buttons, SceUInt8 &lx, SceUInt8 &ly, SceUInt8 &rx, SceUInt8 &ry) {
+    std::lock_guard<std::mutex> lk(mtx);
+    if (mode == MODE_RECORDING) {
+        rec.push_back({ buttons, lx, ly, rx, ry });
+    } else if (mode == MODE_PLAYING) {
+        if (play_pos >= rec.size()) {
+            if (play_loop && !rec.empty()) {
+                play_pos = 0;
+            } else {
+                mode = MODE_IDLE; // selesai: input pad asli kembali dipakai
+                return;
+            }
+        }
+        const Sample &s = rec[play_pos++];
+        buttons = s.buttons;
+        lx = s.lx;
+        ly = s.ly;
+        rx = s.rx;
+        ry = s.ry;
+    }
+}
+} // namespace macro
 
 int ctrl_get(const SceUID thread_id, EmuEnvState &emuenv, int port, SceCtrlData2 *pData, SceUInt32 count, bool negative, bool is_peek, bool is_v2, bool from_ext) {
     emuenv.display.guest_input_reads.fetch_add(1, std::memory_order_relaxed);
@@ -409,6 +618,11 @@ int ctrl_get(const SceUID thread_id, EmuEnvState &emuenv, int port, SceCtrlData2
 
         // update the timestamp, 1 vsync = 1/60 sec = 16 667 us earlier
         pData[i].timeStamp -= i * 16667ULL;
+    }
+
+    if (!is_peek) {
+        for (int i = 0; i < nb_returned_data; i++)
+            macro::on_sample(pData[i].buttons, pData[i].lx, pData[i].ly, pData[i].rx, pData[i].ry);
     }
 
     return nb_returned_data;

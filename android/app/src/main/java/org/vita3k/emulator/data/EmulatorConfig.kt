@@ -42,6 +42,8 @@ class EmulatorConfig {
     @JvmField var controllerAnalogMultiplier: Float = 1.0f
     @JvmField var controllerBinds: IntArray = defaultControllerBinds()
     @JvmField var controllerAxisBinds: IntArray = defaultControllerAxisBinds()
+    // Combo keys: 5 slots of [modifier, trigger, mask]; empty slot = [-1, -1, 0]
+    @JvmField var comboBinds: IntArray = defaultComboBinds()
 
     // Camera
     @JvmField var frontCameraType: Int = 2
@@ -129,6 +131,7 @@ class EmulatorConfig {
         config.controllerAnalogMultiplier = controllerAnalogMultiplier
         config.controllerBinds = controllerBinds.copyOf()
         config.controllerAxisBinds = controllerAxisBinds.copyOf()
+        config.comboBinds = comboBinds.copyOf()
         config.frontCameraType = frontCameraType
         config.frontCameraId = frontCameraId
         config.frontCameraImage = frontCameraImage
@@ -210,6 +213,7 @@ class EmulatorConfig {
             controllerAnalogMultiplier == other.controllerAnalogMultiplier &&
             controllerBinds.contentEquals(other.controllerBinds) &&
             controllerAxisBinds.contentEquals(other.controllerAxisBinds) &&
+            comboBinds.contentEquals(other.comboBinds) &&
             frontCameraType == other.frontCameraType &&
             frontCameraId == other.frontCameraId &&
             frontCameraImage == other.frontCameraImage &&
@@ -288,6 +292,7 @@ class EmulatorConfig {
         result = 31 * result + controllerAnalogMultiplier.hashCode()
         result = 31 * result + controllerBinds.contentHashCode()
         result = 31 * result + controllerAxisBinds.contentHashCode()
+        result = 31 * result + comboBinds.contentHashCode()
         result = 31 * result + frontCameraType
         result = 31 * result + frontCameraId.hashCode()
         result = 31 * result + frontCameraImage.hashCode()
@@ -345,3 +350,5 @@ private fun defaultControllerBinds(): IntArray = intArrayOf(
 private fun defaultControllerAxisBinds(): IntArray = intArrayOf(
     0, 1, 2, 3, 4, 5
 )
+
+private fun defaultComboBinds(): IntArray = IntArray(15) { if (it % 3 == 2) 0 else -1 }

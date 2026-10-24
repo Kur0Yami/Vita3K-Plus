@@ -200,6 +200,7 @@
     <string name="emulation_tab_controls">Controls</string>
     <string name="emulation_tab_controller">Controller</string>
     <string name="emulation_tab_settings">Settings</string>
+    <string name="emulation_tab_cheat" translatable="false">Cheat</string>
     <string name="emulation_resume">Resume</string>
     <string name="emulation_pause">Pause</string>
     <string name="emulation_exit">Exit</string>
