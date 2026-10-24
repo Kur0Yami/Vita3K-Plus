@@ -16,6 +16,7 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 #include "renderer/vulkan/screen_renderer.h"
+#include "renderer/vulkan/custom_screen_filter.h"
 
 #include "renderer/vulkan/state.h"
 #include "util/log.h"
@@ -628,6 +629,8 @@ void ScreenRenderer::set_filter(const std::string_view &filter) {
         this->filter = std::make_unique<FXAAScreenFilter>(*this);
     else if (filter == "Bicubic")
         this->filter = std::make_unique<BicubicScreenFilter>(*this);
+    else if (filter.starts_with("Shader:"))
+        this->filter = std::make_unique<CustomScreenFilter>(*this, std::string(filter.substr(7)));
     else if (filter == "Nearest")
         this->filter = std::make_unique<NearestScreenFilter>(*this);
     else

@@ -24,6 +24,8 @@ add_library(
 	src/vulkan/renderer.cpp
 	src/vulkan/scene.cpp
 	src/vulkan/overlay_renderer.cpp
+	src/vulkan/custom_screen_filter.cpp
+	src/vulkan/custom_shader.cpp
 	src/vulkan/screen_filters.cpp
 	src/vulkan/screen_renderer.cpp
 	src/vulkan/surface_cache.cpp
@@ -50,6 +52,7 @@ add_library(
 target_include_directories(renderer PUBLIC include)
 target_link_libraries(renderer PUBLIC display mem stb shader glutil threads config util vkutil overlay)
 target_link_libraries(renderer PRIVATE dialog ddspp SDL3::SDL3 stb ffmpeg xxHash::xxhash concurrentqueue)
+target_link_libraries(renderer PRIVATE glslang glslang-default-resource-limits)
 
 if(ANDROID)
 	target_link_libraries(renderer PRIVATE android adrenotools)

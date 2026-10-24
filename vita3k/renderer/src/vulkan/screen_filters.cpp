@@ -20,6 +20,8 @@
 
 #include "renderer/vulkan/state.h"
 
+#include <chrono>
+
 namespace renderer::vulkan {
 
 ScreenFilter::ScreenFilter(ScreenRenderer &screen_renderer)
@@ -34,6 +36,15 @@ static constexpr size_t screen_vertex_size = sizeof(screen_vertex);
 static constexpr uint32_t screen_vertex_count = 4;
 
 using screen_vertices_t = screen_vertex[screen_vertex_count];
+
+// Push constants shared by all single pass screen filters (the first 8 bytes are what the built-in shaders read)
+struct ScreenFilterPush {
+    float inv_tex_size[2];
+    float src_res[2]; // size of the visible game image in pixels
+    float uv_rect[4]; // visible part of the texture: left, top, right, bottom
+    float misc[4]; // time (s), window width, window height
+};
+static_assert(sizeof(ScreenFilterPush) == 48);
 
 SinglePassScreenFilter::SinglePassScreenFilter(ScreenRenderer &screen)
     : ScreenFilter(screen) {}
@@ -88,7 +99,7 @@ void SinglePassScreenFilter::create_layout_sync() {
     vk::PushConstantRange push_constant{
         .stageFlags = vk::ShaderStageFlagBits::eFragment,
         .offset = 0,
-        .size = 2 * sizeof(float),
+        .size = sizeof(ScreenFilterPush),
     };
     layout_info.setPushConstantRanges(push_constant);
     pipeline_layout = device.createPipelineLayout(layout_info);
@@ -109,10 +120,9 @@ void SinglePassScreenFilter::create_graphics_pipeline() {
 
     fs::path builtin_shaders_path = screen.state.static_assets / "shaders-builtin/vulkan";
     const auto vertex_shader_path = builtin_shaders_path / get_vertex_name();
-    const auto fragment_shader_path = builtin_shaders_path / get_fragment_name();
 
     vertex_shader = vkutil::load_shader(screen.state.device, vertex_shader_path);
-    fragment_shader = vkutil::load_shader(screen.state.device, fragment_shader_path);
+    fragment_shader = load_fragment_shader(std::string(get_fragment_name()));
     vk::PipelineShaderStageCreateInfo vert_info{
         .stage = vk::ShaderStageFlagBits::eVertex,
         .module = vertex_shader,
@@ -207,6 +217,11 @@ std::string_view SinglePassScreenFilter::get_vertex_name() {
 
 std::string_view SinglePassScreenFilter::get_fragment_name() {
     return "render_main.frag.spv";
+}
+
+vk::ShaderModule SinglePassScreenFilter::load_fragment_shader(const std::string &builtin_file) {
+    const fs::path path = screen.state.static_assets / "shaders-builtin/vulkan" / builtin_file;
+    return vkutil::load_shader(screen.state.device, path);
 }
 
 void SinglePassScreenFilter::init() {
@@ -315,8 +330,20 @@ void SinglePassScreenFilter::render(bool is_pre_renderpass, vk::ImageView src_im
         screen.current_cmd_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
         screen.current_cmd_buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, 0, descriptor_sets[screen.swapchain_image_idx], {});
 
-        std::array<float, 2> inv_size = { 1.f / viewport.texture_width, 1.f / viewport.texture_height };
-        screen.current_cmd_buffer.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0, 2 * sizeof(float), inv_size.data());
+        static const auto start_time = std::chrono::steady_clock::now();
+        ScreenFilterPush push{};
+        push.inv_tex_size[0] = 1.f / viewport.texture_width;
+        push.inv_tex_size[1] = 1.f / viewport.texture_height;
+        push.src_res[0] = static_cast<float>(viewport.width);
+        push.src_res[1] = static_cast<float>(viewport.height);
+        push.uv_rect[0] = viewport.offset_x / static_cast<float>(viewport.texture_width);
+        push.uv_rect[1] = viewport.offset_y / static_cast<float>(viewport.texture_height);
+        push.uv_rect[2] = (viewport.offset_x + viewport.width) / static_cast<float>(viewport.texture_width);
+        push.uv_rect[3] = (viewport.offset_y + viewport.height) / static_cast<float>(viewport.texture_height);
+        push.misc[0] = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
+        push.misc[1] = static_cast<float>(screen.extent.width);
+        push.misc[2] = static_cast<float>(screen.extent.height);
+        screen.current_cmd_buffer.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(push), &push);
 
         screen.current_cmd_buffer.draw(4, 1, 0, 0);
     }

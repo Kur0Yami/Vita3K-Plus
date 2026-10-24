@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.TouchApp
@@ -124,6 +125,7 @@ private enum class PauseMenuTab(val labelRes: Int, val icon: ImageVector) {
     Session(R.string.emulation_tab_session, Icons.Default.Pause),
     Controls(R.string.emulation_tab_controls, Icons.Default.TouchApp),
     Controller(R.string.emulation_tab_controller, Icons.Default.SportsEsports),
+    Cheat(R.string.emulation_tab_cheat, Icons.Default.Search),
     Settings(R.string.emulation_tab_settings, Icons.Default.Settings)
 }
 
@@ -443,6 +445,7 @@ private fun PauseDrawer(
                     connectedGamepads = connectedGamepads,
                     onShowHelp = onShowHelp
                 )
+                PauseMenuTab.Cheat -> CheatSearchTab()
                 PauseMenuTab.Settings -> EmbeddedSettingsTab(
                     activity = activity,
                     sessionViewModel = sessionViewModel,

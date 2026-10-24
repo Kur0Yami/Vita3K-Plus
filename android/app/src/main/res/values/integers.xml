@@ -14,6 +14,16 @@
     <integer name="BUTTON_START_Y">805</integer>
     <integer name="BUTTON_PS_X">475</integer>
     <integer name="BUTTON_PS_Y">875</integer>
+    <integer name="BUTTON_COMBO_1_X">275</integer>
+    <integer name="BUTTON_COMBO_1_Y">735</integer>
+    <integer name="BUTTON_COMBO_2_X">375</integer>
+    <integer name="BUTTON_COMBO_2_Y">735</integer>
+    <integer name="BUTTON_COMBO_3_X">475</integer>
+    <integer name="BUTTON_COMBO_3_Y">735</integer>
+    <integer name="BUTTON_COMBO_4_X">575</integer>
+    <integer name="BUTTON_COMBO_4_Y">735</integer>
+    <integer name="BUTTON_COMBO_5_X">675</integer>
+    <integer name="BUTTON_COMBO_5_Y">735</integer>
     <integer name="DPAD_UP_X">15</integer>
     <integer name="DPAD_UP_Y">245</integer>
     <integer name="STICK_LEFT_X">35</integer>
