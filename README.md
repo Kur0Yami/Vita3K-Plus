@@ -21,12 +21,13 @@ https://github.com/nckstwrt/Vita3K-Plus/releases
 
 ## Enhancements
 
-# v1.3 - Currently Unreleased
+# v1.3 - Release 18th October 2026
 - **Pixeljunk Shooter ultimate** - Sound glitches fixed
 - **UNDER NIGHT IN-BIRTH** - Fixed flickering
 - **Madoka Magica - The Battle Pentagram** - Graphics fixes
 - **Ratchet & Clank** - Vertex renderering fixes
 - **Samurai Warriors 4** - Fix for freezing
+- **Samurai Warriors 3** - Fix for freezing
 - **Rayman Legends** - Fix for level end freeze
 - **MotoGP 14** - Fix for audio stuttering on Android
 - **Killzone** - Fix for crashing on some Android devices
@@ -37,8 +38,11 @@ https://github.com/nckstwrt/Vita3K-Plus/releases
 - **Jak & Daxter Trilogy** - Start up and Graphics fixed
 - **One Piece** - Graphics issues (black blocks/lines) fixed
 - **Hatsune Miku** - Broken song's video crashes fixed
+- **The Amazing Spider-Man** - Fix shadows (flickering)
+- **Metal Gear Solid 3** - Subtitles and Audio no longer out of sync
 - **Android 17** - Fix for Turnip to work on Android 17/OneUI 9 devices
 - **Audio Fixes** - cubeb and SDL audio should no longer crackle/stutter/pop/cut out/etc
+- **Mali Fixes** - Don't expect miracles! But now DOA5 works fine on my Mali S21 :)
 
 # v1.2 - Released 30th Sept 2026
 - **Soul Sacrifice Delta** - Outline missing regression + floor textures fixed (Thanks doctorthoss and NaGaa95!)
