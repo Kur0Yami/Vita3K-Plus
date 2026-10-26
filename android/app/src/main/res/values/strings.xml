@@ -407,6 +407,8 @@
     <string name="settings_gpu_texture_format">Texture Exporting Format</string>
     <string name="settings_gpu_texture_format_desc">Format to export textures in</string>
     <string name="settings_gpu_fps_hack">FPS Hack</string>
+    <string name="settings_gpu_stub_pool">Stub Pool</string>
+    <string name="settings_gpu_stub_pool_desc">Per-game only, off by default. Takes variable import stubs from a compact pool instead of one allocation each. Needed by some games (e.g. GE2RB Blood Rage). Takes effect the next time the game starts.</string>
     <string name="settings_gpu_fps_hack_desc">Game hack. May double the framerate from 30 FPS to 60 FPS in some games,\nbut can cause some games to run twice as fast.</string>
     <string name="settings_gpu_turbo_mode">Turbo Mode</string>
     <string name="settings_gpu_turbo_mode_desc">Provides a way to force the GPU to run at the maximum possible clocks. Thermal constraints will still be applied.</string>

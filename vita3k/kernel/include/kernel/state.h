@@ -111,6 +111,20 @@ struct KernelState {
     CodecEngineBlocks codec_blocks;
 
     bool accurate_thread_scheduling = true;
+
+    // Per-game "Stub pool" toggle (custom config, off by default). See alloc_stub_symval() in load_self.cpp.
+    static constexpr uint32_t STUB_POOL_CHUNK = 0x10000;
+    bool use_stub_pool = false;
+    std::mutex stub_pool_mutex;
+    std::vector<Address> stub_pool_chunks;
+    Address stub_pool_base = 0;
+    uint32_t stub_pool_used = STUB_POOL_CHUNK;
+    void reset_stub_pool() {
+        const std::lock_guard<std::mutex> lock(stub_pool_mutex);
+        stub_pool_chunks.clear();
+        stub_pool_base = 0;
+        stub_pool_used = STUB_POOL_CHUNK;
+    }
     bool preempt_on_wake = false;
     int preempt_on_wake_us = 1000;
 

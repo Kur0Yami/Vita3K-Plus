@@ -863,6 +863,18 @@ private fun GpuSettingsSection(
                 ),
                 onShowHelp = onShowHelp
             )
+            if (isPerApp) {
+                SettingsToggleRow(
+                    title = stringResource(R.string.settings_gpu_stub_pool),
+                    checked = cfg.stubPool,
+                    onCheckedChange = { onUpdate { stubPool = it } },
+                    help = SettingsHelpEntry(
+                        title = stringResource(R.string.settings_gpu_stub_pool),
+                        body = stringResource(R.string.settings_gpu_stub_pool_desc)
+                    ),
+                    onShowHelp = onShowHelp
+                )
+            }
             if (!isPerApp && isVulkan && showTurboModeOption) {
                 SettingsToggleRow(
                     title = stringResource(R.string.settings_gpu_turbo_mode),
