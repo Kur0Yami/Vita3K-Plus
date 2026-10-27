@@ -1,0 +1,133 @@
+name: Android arm64 APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android-arm64:
+    name: Android arm64
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Restrict build to arm64
+        run: |
+          sed -i 's/abiFilters "arm64-v8a", "x86_64"/abiFilters "arm64-v8a"/' android/app/build.gradle
+          grep -q 'abiFilters "arm64-v8a"$' android/app/build.gradle
+          sed -i 's/arm64-android x64-android/arm64-android/' .ci/setup-android.sh
+
+      - name: Restore native dependency cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            /usr/local/share/vcpkg/installed
+            /usr/local/share/vcpkg/packages
+          key: cache-android-arm64-${{ hashFiles('CMakeLists.txt', 'cmake/**', '.ci/**', 'android/app/build.gradle', 'vcpkg.json') }}
+          restore-keys: |
+            cache-android-arm64-
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          add-job-summary: on-failure
+          cache-provider: basic
+          validate-wrappers: false
+
+      - name: Set up Android SDK tools
+        uses: android-actions/setup-android@v4
+
+      - name: Set up Android build environment
+        env:
+          VCPKG_ROOT: /usr/local/share/vcpkg
+        run: bash ./.ci/setup-android.sh
+
+      - uses: hendrikmuhs/ccache-action@v1.2.23
+        with:
+          key: android-arm64
+
+      - name: Prepare signing
+        env:
+          KEYSTORE_ENCODED: ${{ secrets.KEYSTORE }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          # Tanpa keystore tetap, runner membuat debug key baru tiap build => signature
+          # berubah-ubah dan APK tidak bisa di-update di atas versi sebelumnya.
+          if [ -z "$KEYSTORE_ENCODED" ] || [ -z "$SIGNING_STORE_PASSWORD" ] || [ -z "$SIGNING_KEY_ALIAS" ] || [ -z "$SIGNING_KEY_PASSWORD" ]; then
+            echo "::error::Secret KEYSTORE, SIGNING_STORE_PASSWORD, SIGNING_KEY_ALIAS, SIGNING_KEY_PASSWORD belum lengkap. Isi di Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "$KEYSTORE_ENCODED" | base64 --decode > /home/runner/keystore.jks
+          keytool -list -keystore /home/runner/keystore.jks -storepass "$SIGNING_STORE_PASSWORD" -alias "$SIGNING_KEY_ALIAS" > /dev/null
+
+      - name: Build APKs (org.vita3kplus.emulator + org.vita3kplus.emulator.plusultra)
+        env:
+          SIGNING_STORE_PATH: /home/runner/keystore.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          VCPKG_ROOT: /usr/local/share/vcpkg
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+        run: |
+          set -euo pipefail
+          # Only applicationId and the launcher name differ between variants. namespace stays
+          # org.vita3k.emulator (JNI symbols are bound to it). The native code is built once;
+          # the second gradle run should only repackage manifest/resources/dex.
+          set_variant() {
+            sed -i -E "s/applicationId = \"[^\"]*\"/applicationId = \"$1\"/" android/app/build.gradle
+            sed -i -E "s|<string name=\"app_name\">[^<]*</string>|<string name=\"app_name\">$2</string>|" android/app/src/main/res/values/strings.xml
+            grep -q "applicationId = \"$1\"" android/app/build.gradle
+            grep -q "<string name=\"app_name\">$2</string>" android/app/src/main/res/values/strings.xml
+          }
+          set_variant org.vita3kplus.emulator "Vita3K+"
+          bash ./.ci/build-android.sh artifacts/vita3k-plus
+          set_variant org.vita3kplus.emulator.plusultra "Vita3K+U"
+          bash ./.ci/build-android.sh artifacts/vita3k-plus-u
+
+      - name: Report APK size
+        run: |
+          for d in vita3k-plus vita3k-plus-u; do
+            ls -l artifacts/$d/app.apk
+            "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/build-tools/36.0.0/apksigner verify --print-certs artifacts/$d/app.apk | head -4 || true
+            "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/build-tools/36.0.0/aapt2 dump badging artifacts/$d/app.apk | grep -E "^package:|application-label:" || true
+          done
+          unzip -lv artifacts/vita3k-plus/app.apk | sort -k1 -n -r | head -15
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="build-${{ github.run_number }}-${{ github.run_attempt }}"
+          mkdir -p release
+          cp artifacts/vita3k-plus/app.apk release/Vita3K-Plus.apk
+          cp artifacts/vita3k-plus-u/app.apk release/Vita3K-Plus-U.apk
+          {
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo
+            echo "- Vita3K-Plus.apk: org.vita3kplus.emulator (Vita3K+)"
+            echo "- Vita3K-Plus-U.apk: org.vita3kplus.emulator.plusultra (Vita3K+U)"
+            echo
+            echo "SHA-256:"
+            (cd release && sha256sum *.apk)
+          } > release/notes.md
+          gh release create "$TAG" release/Vita3K-Plus.apk release/Vita3K-Plus-U.apk \
+            --target "$GITHUB_SHA" \
+            --title "Vita3K+ ${TAG} (${GITHUB_REF_NAME})" \
+            --notes-file release/notes.md \
+            --prerelease

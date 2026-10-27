@@ -58,6 +58,7 @@ struct EmulatorConfigFields {
     jfieldID importTextures = nullptr;
     jfieldID exportAsPng = nullptr;
     jfieldID fpsHack = nullptr;
+    jfieldID stubPool = nullptr;
     jfieldID turboMode = nullptr;
     jfieldID shaderCache = nullptr;
     jfieldID spirvShader = nullptr;
@@ -69,6 +70,7 @@ struct EmulatorConfigFields {
     jfieldID controllerAnalogMultiplier = nullptr;
     jfieldID controllerBinds = nullptr;
     jfieldID controllerAxisBinds = nullptr;
+    jfieldID comboBinds = nullptr;
     jfieldID frontCameraType = nullptr;
     jfieldID frontCameraId = nullptr;
     jfieldID frontCameraImage = nullptr;
@@ -145,6 +147,7 @@ EmulatorConfigFields resolve_config_fields(JNIEnv *env) {
     fields.importTextures = env->GetFieldID(fields.cls, "importTextures", "Z");
     fields.exportAsPng = env->GetFieldID(fields.cls, "exportAsPng", "Z");
     fields.fpsHack = env->GetFieldID(fields.cls, "fpsHack", "Z");
+    fields.stubPool = env->GetFieldID(fields.cls, "stubPool", "Z");
     fields.turboMode = env->GetFieldID(fields.cls, "turboMode", "Z");
     fields.shaderCache = env->GetFieldID(fields.cls, "shaderCache", "Z");
     fields.spirvShader = env->GetFieldID(fields.cls, "spirvShader", "Z");
@@ -156,6 +159,7 @@ EmulatorConfigFields resolve_config_fields(JNIEnv *env) {
     fields.controllerAnalogMultiplier = env->GetFieldID(fields.cls, "controllerAnalogMultiplier", "F");
     fields.controllerBinds = env->GetFieldID(fields.cls, "controllerBinds", "[I");
     fields.controllerAxisBinds = env->GetFieldID(fields.cls, "controllerAxisBinds", "[I");
+    fields.comboBinds = env->GetFieldID(fields.cls, "comboBinds", "[I");
     fields.frontCameraType = env->GetFieldID(fields.cls, "frontCameraType", "I");
     fields.frontCameraId = env->GetFieldID(fields.cls, "frontCameraId", "Ljava/lang/String;");
     fields.frontCameraImage = env->GetFieldID(fields.cls, "frontCameraImage", "Ljava/lang/String;");
@@ -284,6 +288,29 @@ void read_int_array_field(JNIEnv *env, jobject obj, jfieldID field, std::vector<
     env->DeleteLocalRef(array);
 }
 
+void set_int_array_field(JNIEnv *env, jobject obj, jfieldID field, const std::vector<int> &values) {
+    jintArray array = env->NewIntArray(static_cast<jsize>(values.size()));
+    if (!array)
+        return;
+
+    std::vector<jint> ints(values.begin(), values.end());
+    env->SetIntArrayRegion(array, 0, static_cast<jsize>(ints.size()), ints.data());
+    env->SetObjectField(obj, field, array);
+    env->DeleteLocalRef(array);
+}
+
+void read_int_array_field(JNIEnv *env, jobject obj, jfieldID field, std::vector<int> &out_values) {
+    auto *array = reinterpret_cast<jintArray>(env->GetObjectField(obj, field));
+    if (!array)
+        return;
+
+    const jsize length = env->GetArrayLength(array);
+    std::vector<jint> ints(static_cast<size_t>(length));
+    env->GetIntArrayRegion(array, 0, length, ints.data());
+    out_values.assign(ints.begin(), ints.end());
+    env->DeleteLocalRef(array);
+}
+
 void fill_config_object(JNIEnv *env, jobject obj, const EmulatorConfigFields &fields,
     const Config::CurrentConfig &current_config, const Config &config, const EmuEnvState *emuenv) {
     env->SetIntField(obj, fields.modulesMode, static_cast<jint>(current_config.modules_mode));
@@ -327,6 +354,7 @@ void fill_config_object(JNIEnv *env, jobject obj, const EmulatorConfigFields &fi
     env->SetBooleanField(obj, fields.importTextures, current_config.import_textures);
     env->SetBooleanField(obj, fields.exportAsPng, current_config.export_as_png);
     env->SetBooleanField(obj, fields.fpsHack, current_config.fps_hack);
+    env->SetBooleanField(obj, fields.stubPool, current_config.stub_pool);
     env->SetBooleanField(obj, fields.turboMode, config.turbo_mode);
     env->SetBooleanField(obj, fields.shaderCache, current_config.shader_cache);
     env->SetBooleanField(obj, fields.spirvShader, current_config.spirv_shader);
@@ -346,6 +374,7 @@ void fill_config_object(JNIEnv *env, jobject obj, const EmulatorConfigFields &fi
     env->SetFloatField(obj, fields.controllerAnalogMultiplier, config.controller_analog_multiplier);
     set_int_array_field(env, obj, fields.controllerBinds, normalized_controller_binds(config));
     set_int_array_field(env, obj, fields.controllerAxisBinds, normalized_controller_axis_binds(config));
+    set_int_array_field(env, obj, fields.comboBinds, config.combo_binds);
     env->SetIntField(obj, fields.frontCameraType, static_cast<jint>(config.front_camera_type));
     {
         jstring value = env->NewStringUTF(config.front_camera_id.c_str());
@@ -471,6 +500,7 @@ void read_config_object(JNIEnv *env, jobject obj, const EmulatorConfigFields &fi
     current_config.import_textures = env->GetBooleanField(obj, fields.importTextures) != JNI_FALSE;
     current_config.export_as_png = env->GetBooleanField(obj, fields.exportAsPng) != JNI_FALSE;
     current_config.fps_hack = env->GetBooleanField(obj, fields.fpsHack) != JNI_FALSE;
+    current_config.stub_pool = env->GetBooleanField(obj, fields.stubPool) != JNI_FALSE;
     config.turbo_mode = env->GetBooleanField(obj, fields.turboMode) != JNI_FALSE;
     current_config.shader_cache = env->GetBooleanField(obj, fields.shaderCache) != JNI_FALSE;
     current_config.spirv_shader = env->GetBooleanField(obj, fields.spirvShader) != JNI_FALSE;
@@ -494,6 +524,7 @@ void read_config_object(JNIEnv *env, jobject obj, const EmulatorConfigFields &fi
     config.controller_analog_multiplier = env->GetFloatField(obj, fields.controllerAnalogMultiplier);
     read_int_array_field(env, obj, fields.controllerBinds, config.controller_binds);
     read_int_array_field(env, obj, fields.controllerAxisBinds, config.controller_axis_binds);
+    read_int_array_field(env, obj, fields.comboBinds, config.combo_binds);
     config.front_camera_type = static_cast<int>(env->GetIntField(obj, fields.frontCameraType));
     {
         auto *value = reinterpret_cast<jstring>(env->GetObjectField(obj, fields.frontCameraId));
