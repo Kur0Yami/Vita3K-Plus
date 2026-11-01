@@ -138,6 +138,10 @@ object NativeLib {
     external fun setPauseReasonEnabled(reasonMask: Int, enabled: Boolean): Boolean
     /** Returns true when an app session is currently active. */
     external fun isAppRunning(): Boolean
+    /** Java-side gamepad button (SDL_GamepadButton id) pressed state, used when no SDL gamepad is open. */
+    external fun setJavaPadButton(button: Int, down: Boolean)
+    /** Java-side gamepad axis (SDL_GamepadAxis id); sticks -1..1, triggers 0..1. */
+    external fun setJavaPadAxis(axis: Int, value: Float)
     /** Requests a graceful shutdown of the currently running app session. */
     external fun requestAppQuit(): Boolean
     /** Requests an orderly in-process relaunch into another app or executable. */

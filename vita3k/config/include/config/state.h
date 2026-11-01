@@ -87,6 +87,9 @@ struct Config {
         bool export_textures = false;
         bool export_as_png = false;
         bool fps_hack = false;
+        bool stub_pool = false;
+        // Combo keys, flat list of { modifier, trigger, mask } (max 5). Per game via custom config.
+        std::vector<int> combo_binds = {};
         bool shader_cache = true;
         bool spirv_shader = false;
         bool texture_cache = true;

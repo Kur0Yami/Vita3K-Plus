@@ -17,6 +17,7 @@
 
 #include <cpu/functions.h>
 #include <kernel/load_self.h>
+#include <mem/functions.h>
 #include <kernel/relocation.h>
 #include <kernel/state.h>
 #include <kernel/types.h>
@@ -57,6 +58,48 @@ struct VarImportsHeader {
 };
 static_assert(sizeof(VarImportsHeader) == sizeof(uint32_t));
 
+// Optional stub pool (per-game custom config "Stub pool", OFF by default).
+// Normally every stub var symval gets its own alloc(). With the pool on they are carved from
+// 64 KB chunks placed at STUB_POOL_START so they do not fragment the area modules load into.
+// Pool state lives in KernelState, so it is reset on every boot.
+//
+// IMPORTANT: free() works per page and releases the whole allocation that owns the page, so
+// a slot inside a pool chunk must never be passed to free(). release_stub_symval() handles that.
+static constexpr Address STUB_POOL_START = 0x8E000000; // TODO: verify this range is free in your build
+
+static Address alloc_stub_symval(KernelState &kernel, MemState &mem, const char *name) {
+    if (!kernel.use_stub_pool)
+        return alloc(mem, 4, name);
+
+    const std::lock_guard<std::mutex> lock(kernel.stub_pool_mutex);
+    if (kernel.stub_pool_used + 4 > KernelState::STUB_POOL_CHUNK) {
+        const Address chunk = alloc(mem, KernelState::STUB_POOL_CHUNK, "Stub var symval pool", STUB_POOL_START);
+        if (chunk == 0) {
+            LOG_ERROR("Stub pool allocation failed, falling back to plain alloc for {}", name);
+            return alloc(mem, 4, name);
+        }
+        kernel.stub_pool_chunks.push_back(chunk);
+        kernel.stub_pool_base = chunk;
+        kernel.stub_pool_used = 0;
+    }
+    const Address addr = kernel.stub_pool_base + kernel.stub_pool_used;
+    kernel.stub_pool_used += 4;
+    LOG_DEBUG("{} -> {}", name, log_hex(addr));
+    return addr;
+}
+
+// Replaces free() for old stub symvals. Pool slots are never released individually.
+static void release_stub_symval(KernelState &kernel, MemState &mem, Address addr) {
+    if (kernel.use_stub_pool) {
+        const std::lock_guard<std::mutex> lock(kernel.stub_pool_mutex);
+        for (const Address chunk : kernel.stub_pool_chunks) {
+            if (addr >= chunk && addr < chunk + KernelState::STUB_POOL_CHUNK)
+                return;
+        }
+    }
+    free(mem, addr);
+}
+
 static bool load_var_imports(const uint32_t *nids, const Ptr<uint32_t> *entries, size_t count, const SegmentInfosForReloc &segments, KernelState &kernel, MemState &mem, uint32_t module_id) {
     const std::lock_guard<std::mutex> guard(kernel.export_nids_mutex);
     for (size_t i = 0; i < count; ++i) {
@@ -83,7 +126,7 @@ static bool load_var_imports(const uint32_t *nids, const Ptr<uint32_t> *entries,
             LOG_DEBUG("\tNID NOT FOUND {} ({}) at {}, setting to stub value {}", log_hex(nid), name, log_hex(entry.address()), log_hex(STUB_SYMVAL));
 
             auto alloc_name = fmt::format("Stub var import reloc symval, NID {} ({})", log_hex(nid), name);
-            auto stub_symval_ptr = Ptr<uint32_t>(alloc(mem, 4, alloc_name.c_str()));
+            auto stub_symval_ptr = Ptr<uint32_t>(alloc_stub_symval(kernel, mem, alloc_name.c_str()));
             *stub_symval_ptr.get(mem) = STUB_SYMVAL;
 
             export_address = stub_symval_ptr.address();
@@ -409,7 +452,7 @@ static bool load_var_exports(const uint32_t *nids, const Ptr<uint32_t> *entries,
             }
         }
         if (old_entry_address)
-            free(mem, old_entry_address);
+            release_stub_symval(kernel, mem, old_entry_address);
     }
     return true;
 }
@@ -426,7 +469,7 @@ static bool unload_var_exports(const uint32_t *nids, size_t count, KernelState &
         constexpr auto STUB_SYMVAL = 0xDEADBEEF;
 
         auto alloc_name = fmt::format("Stub var import reloc symval, NID {} ({})", log_hex(nid), import_name(nid));
-        auto stub_symval_ptr = Ptr<uint32_t>(alloc(mem, 4, alloc_name.c_str()));
+        auto stub_symval_ptr = Ptr<uint32_t>(alloc_stub_symval(kernel, mem, alloc_name.c_str()));
         *stub_symval_ptr.get(mem) = STUB_SYMVAL;
 
         const Ptr<uint32_t> entry = stub_symval_ptr;

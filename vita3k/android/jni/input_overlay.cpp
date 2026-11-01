@@ -16,6 +16,7 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 #include "android_state.h"
+#include <ctrl/java_pad.h>
 
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_init.h>
@@ -98,6 +99,11 @@ Java_org_vita3k_emulator_overlay_InputOverlay_setAxis(JNIEnv *env, jobject thiz,
 
 JNIEXPORT void JNICALL
 Java_org_vita3k_emulator_overlay_InputOverlay_setButton(JNIEnv *env, jobject thiz, jint button, jboolean value) {
+    // On-screen combo buttons use ids 2000..2004 (see InputOverlay ControlId.combo_1..5).
+    if (button >= 2000 && button < 2005) {
+        ctrl::java_pad::set_virtual_combo(button - 2000, value == JNI_TRUE);
+        return;
+    }
     if (!virtual_joystick)
         return;
 

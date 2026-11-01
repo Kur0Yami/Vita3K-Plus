@@ -40,7 +40,9 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.AlertDialog
@@ -76,6 +78,7 @@ import org.vita3k.emulator.R
 import org.vita3k.emulator.data.RestartRequiredSetting
 import org.vita3k.emulator.ui.components.OverlayEditorPalette
 import org.vita3k.emulator.ui.rememberConnectedGamepads
+import org.vita3k.emulator.ui.screens.settings.ComboKeySection
 import org.vita3k.emulator.ui.screens.settings.ControllerMappingSections
 import org.vita3k.emulator.ui.screens.settings.SettingsCategory
 import org.vita3k.emulator.ui.screens.settings.SettingsCategoryBody
@@ -124,6 +127,8 @@ private enum class PauseMenuTab(val labelRes: Int, val icon: ImageVector) {
     Session(R.string.emulation_tab_session, Icons.Default.Pause),
     Controls(R.string.emulation_tab_controls, Icons.Default.TouchApp),
     Controller(R.string.emulation_tab_controller, Icons.Default.SportsEsports),
+    Cheat(R.string.emulation_tab_cheat, Icons.Default.Search),
+    SaveState(R.string.emulation_tab_state, Icons.Default.Star),
     Settings(R.string.emulation_tab_settings, Icons.Default.Settings)
 }
 
@@ -434,6 +439,9 @@ private fun PauseDrawer(
                 PauseMenuTab.Controls -> ControlsTab(
                     activity = activity,
                     sessionViewModel = sessionViewModel,
+                    settingsViewModel = settingsViewModel,
+                    connectedGamepads = connectedGamepads,
+                    titleId = uiState.titleId,
                     onShowHelp = onShowHelp
                 )
                 PauseMenuTab.Controller -> ControllerTab(
@@ -443,6 +451,8 @@ private fun PauseDrawer(
                     connectedGamepads = connectedGamepads,
                     onShowHelp = onShowHelp
                 )
+                PauseMenuTab.Cheat -> CheatSearchTab()
+                PauseMenuTab.SaveState -> StateTab()
                 PauseMenuTab.Settings -> EmbeddedSettingsTab(
                     activity = activity,
                     sessionViewModel = sessionViewModel,
@@ -727,20 +737,41 @@ private fun CustomConfigSection(
 private fun ControlsTab(
     activity: Emulator,
     sessionViewModel: EmulationSessionViewModel,
+    settingsViewModel: SettingsViewModel,
+    connectedGamepads: List<org.vita3k.emulator.ConnectedGamepad>,
+    titleId: String,
     onShowHelp: (SettingsHelpEntry) -> Unit
 ) {
     val uiState = sessionViewModel.uiState
 
-    OverlaySettingsRows(
-        overlayConfig = sessionViewModel.currentOverlayConfig(),
-        onOverlayConfigChange = { updated ->
-            sessionViewModel.updateOverlayConfig(activity) { updated }
-        },
-        onShowHelp = onShowHelp,
-        controllerConnected = uiState.controllerConnected,
-        onStartControlsEditor = { sessionViewModel.startControlsEditor(activity) },
-        onResetControlsLayout = { sessionViewModel.resetControlsLayout(activity) }
-    )
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        OverlaySettingsRows(
+            overlayConfig = sessionViewModel.currentOverlayConfig(),
+            onOverlayConfigChange = { updated ->
+                sessionViewModel.updateOverlayConfig(activity) { updated }
+            },
+            onShowHelp = onShowHelp,
+            controllerConnected = uiState.controllerConnected,
+            onStartControlsEditor = { sessionViewModel.startControlsEditor(activity) },
+            onResetControlsLayout = { sessionViewModel.resetControlsLayout(activity) }
+        )
+
+        // Combo keys are saved per game id (custom config of this game) and apply right away.
+        if (titleId.isNotBlank() && settingsViewModel.isLoaded(titleId)) {
+            ComboKeySection(
+                cfg = settingsViewModel.config,
+                connectedGamepads = connectedGamepads,
+                onUpdate = { block ->
+                    settingsViewModel.update(block)
+                    settingsViewModel.save(forceCustomConfig = true) { _ ->
+                        sessionViewModel.showStatusMessage("Combo key disimpan untuk $titleId")
+                    }
+                },
+                onShowHelp = onShowHelp,
+                summary = "Disimpan khusus untuk game ini ($titleId) dan langsung berlaku. Tahan modifier lalu tekan trigger untuk menekan beberapa tombol Vita sekaligus (maks 5)."
+            )
+        }
+    }
 }
 
 @Composable

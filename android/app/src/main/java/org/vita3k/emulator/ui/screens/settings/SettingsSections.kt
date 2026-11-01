@@ -486,8 +486,20 @@ private fun GpuSettingsSection(
             )
             val screenFilterTitle = stringResource(R.string.settings_gpu_screen_filter)
             val screenFilterHelp = helpEntry(screenFilterTitle, stringResource(R.string.settings_gpu_screen_filter_desc))
+            // user shaders: <emulator folder>/shaders-custom/*.glsl
+            val customShaders = remember {
+                if (NativeLib.isInitialized()) {
+                    java.io.File(NativeLib.getCurrentEmulatorPath(), "shaders-custom")
+                        .listFiles { f -> f.isFile && f.extension.equals("glsl", ignoreCase = true) }
+                        ?.map { "Shader:" + it.name }
+                        ?.sorted()
+                        ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
             val filterOptions = if (isVulkan) {
-                listOf("Nearest", "Bilinear", "Bicubic", "FXAA", "FSR")
+                listOf("Nearest", "Bilinear", "Bicubic", "FXAA", "FSR") + customShaders
             } else {
                 listOf("Bilinear", "FXAA")
             }
@@ -863,6 +875,18 @@ private fun GpuSettingsSection(
                 ),
                 onShowHelp = onShowHelp
             )
+            if (isPerApp) {
+                SettingsToggleRow(
+                    title = stringResource(R.string.settings_gpu_stub_pool),
+                    checked = cfg.stubPool,
+                    onCheckedChange = { onUpdate { stubPool = it } },
+                    help = SettingsHelpEntry(
+                        title = stringResource(R.string.settings_gpu_stub_pool),
+                        body = stringResource(R.string.settings_gpu_stub_pool_desc)
+                    ),
+                    onShowHelp = onShowHelp
+                )
+            }
             if (!isPerApp && isVulkan && showTurboModeOption) {
                 SettingsToggleRow(
                     title = stringResource(R.string.settings_gpu_turbo_mode),

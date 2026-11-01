@@ -111,6 +111,7 @@ fun SettingsRoute(
     var showDeleteCustomConfigDialog by remember { mutableStateOf(false) }
     var showClearAllCustomConfigsDialog by remember { mutableStateOf(false) }
     var pendingCustomDriverRemoval by remember { mutableStateOf<String?>(null) }
+    var showDriverFetcher by remember { mutableStateOf(false) }
     var pendingCameraImageTarget by remember { mutableStateOf<Boolean?>(null) }
     var activeHelp by remember { mutableStateOf<SettingsHelpEntry?>(null) }
     var searchActive by rememberSaveable(titleId) { mutableStateOf(false) }
@@ -346,7 +347,7 @@ fun SettingsRoute(
                     onChangeStorageFolder = ::requestStorageFolderChange,
                     onResetStorageFolder = { viewModel.resetStorageFolder(onStorageChanged) },
                     onInstallCustomDriver = ::requestCustomDriverInstall,
-                    onDownloadCustomDriver = { openUrl(CUSTOM_DRIVER_DOWNLOAD_URL) },
+                    onDownloadCustomDriver = { showDriverFetcher = true },
                     onPickCameraImage = ::pickCameraImage,
                     onRequestRemoveCustomDriver = { pendingCustomDriverRemoval = it },
                     onClearAllCustomConfigs = { showClearAllCustomConfigsDialog = true },
@@ -487,6 +488,16 @@ fun SettingsRoute(
                 TextButton(onClick = { showClearAllCustomConfigsDialog = false }) {
                     Text(stringResource(R.string.action_cancel))
                 }
+            }
+        )
+    }
+
+    if (showDriverFetcher) {
+        DriverFetchDialog(
+            onDismiss = { showDriverFetcher = false },
+            onInstall = { path ->
+                showDriverFetcher = false
+                viewModel.installCustomDriver(path)
             }
         )
     }

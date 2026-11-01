@@ -525,6 +525,10 @@ static ExitCode load_app_impl(SceUID &main_module_id, EmuEnvState &emuenv, const
         emuenv.post_app_launch_request(relaunch.value_or(AppLaunchRequest{ .reason = AppLaunchReason::ProcessExit }));
     };
     emuenv.kernel.accurate_thread_scheduling = emuenv.cfg.current_config.accurate_thread_scheduling;
+    emuenv.kernel.use_stub_pool = emuenv.cfg.current_config.stub_pool;
+    emuenv.kernel.reset_stub_pool();
+    if (emuenv.kernel.use_stub_pool)
+        LOG_INFO("Stub pool enabled (per-game config): variable import stubs come from a pool at 0x8E000000");
     // preempt-on-wake goes with accurate thread scheduling on every platform
     emuenv.kernel.preempt_on_wake = emuenv.cfg.current_config.accurate_thread_scheduling;
     emuenv.kernel.preempt_on_wake_us = emuenv.cfg.current_config.preempt_on_wake_us;
