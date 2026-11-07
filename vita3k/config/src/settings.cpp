@@ -30,6 +30,38 @@ namespace config {
 
 namespace {
 
+// Combo keys are stored in the custom config xml as a comma separated list, e.g. "105,2,49664,-1,-1,0".
+std::string join_int_list(const std::vector<int> &values) {
+    std::string out;
+    for (size_t i = 0; i < values.size(); i++) {
+        if (i)
+            out += ',';
+        out += std::to_string(values[i]);
+    }
+    return out;
+}
+
+std::vector<int> parse_int_list(const char *text) {
+    std::vector<int> out;
+    std::string cur;
+    for (const char *p = text ? text : ""; ; ++p) {
+        if (*p == ',' || *p == '\0') {
+            if (!cur.empty()) {
+                try {
+                    out.push_back(std::stoi(cur));
+                } catch (...) {
+                }
+                cur.clear();
+            }
+            if (*p == '\0')
+                break;
+        } else {
+            cur += *p;
+        }
+    }
+    return out;
+}
+
 void copy_global_to_current(Config::CurrentConfig &current, const Config &cfg) {
     current.cpu_opt = cfg.cpu_opt;
     current.modules_mode = cfg.modules_mode;
@@ -54,6 +86,7 @@ void copy_global_to_current(Config::CurrentConfig &current, const Config &cfg) {
     current.export_textures = cfg.export_textures;
     current.export_as_png = cfg.export_as_png;
     current.fps_hack = cfg.fps_hack;
+    current.combo_binds = cfg.combo_binds;
     current.shader_cache = cfg.shader_cache;
     current.spirv_shader = cfg.spirv_shader;
     current.texture_cache = cfg.texture_cache;
@@ -102,6 +135,7 @@ void copy_current_to_global(Config &cfg, const Config::CurrentConfig &current) {
     cfg.export_textures = current.export_textures;
     cfg.export_as_png = current.export_as_png;
     cfg.fps_hack = current.fps_hack;
+    cfg.combo_binds = current.combo_binds;
     cfg.shader_cache = current.shader_cache;
     cfg.spirv_shader = current.spirv_shader;
     cfg.texture_cache = current.texture_cache;
@@ -241,6 +275,10 @@ bool load_custom_config(Config::CurrentConfig &out, const fs::path &config_path,
         out.file_loading_delay = emu.attribute("file-loading-delay").as_int();
         out.stretch_the_display_area = emu.attribute("stretch-the-display-area").as_bool();
         out.fullscreen_hd_res_pixel_perfect = emu.attribute("fullscreen-hd-res-pixel-perfect").as_bool();
+        // Per-game combo keys. Old custom configs have no attribute: keep the global combos then.
+        const auto combo_attr = emu.attribute("combo-binds");
+        if (!combo_attr.empty())
+            out.combo_binds = parse_int_list(combo_attr.as_string());
     }
 
     if (!config_child.child("debug").empty()) {
@@ -324,6 +362,7 @@ bool save_custom_config(const Config::CurrentConfig &cc, const fs::path &config_
     emu_child.append_attribute("file-loading-delay") = cc.file_loading_delay;
     emu_child.append_attribute("stretch-the-display-area") = cc.stretch_the_display_area;
     emu_child.append_attribute("fullscreen-hd-res-pixel-perfect") = cc.fullscreen_hd_res_pixel_perfect;
+    emu_child.append_attribute("combo-binds") = join_int_list(cc.combo_binds).c_str();
 
     auto debug_child = config_child.append_child("debug");
     debug_child.append_attribute("log-active-shaders") = cc.log_active_shaders;

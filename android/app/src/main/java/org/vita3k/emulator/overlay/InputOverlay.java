@@ -12,6 +12,7 @@ import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.util.DisplayMetrics;
@@ -183,7 +184,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
   public void releaseAllInputs() {
     for (InputOverlayDrawableButton button : overlayButtons) {
-      if ((button.getRole() & OVERLAY_MASK_UTILITY) == 0) {
+      if ((button.getRole() & OVERLAY_MASK_UTILITY) == 0 && !isHostButton(button.getLegacyId())) {
         setButton(button.getControl(), false);
       }
       button.setPressedState(false);
@@ -211,7 +212,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
   {
     int legacyId = button.getLegacyId();
     button.setPressedState(false);
-    if (legacyId != ButtonType.BUTTON_TOUCH_SWITCH && legacyId != ButtonType.BUTTON_TOUCH_HIDE)
+    if (!isHostButton(legacyId))
       setButton(button.getControl(), false);
     button.setTrackId(-1);
   }
@@ -401,6 +402,14 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
               mHideOverlayButtons = !mHideOverlayButtons;
               hideToggled = true;
             }
+            else if (legacyId == ButtonType.BUTTON_CHEAT)
+            {
+              CheatPanel.show(getContext());
+            }
+            else if (legacyId == ButtonType.BUTTON_MACRO)
+            {
+              MacroControl.show(getContext());
+            }
             else
               setButton(button.getControl(), true);
           }
@@ -412,8 +421,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
           {
             button.setPressedState(false);
 
-            if (legacyId != ButtonType.BUTTON_TOUCH_SWITCH &&
-                    legacyId != ButtonType.BUTTON_TOUCH_HIDE)
+            if (!isHostButton(legacyId))
               setButton(button.getControl(), false);
 
             button.setTrackId(-1);
@@ -669,6 +677,8 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
   private void addVitaOverlayControls(LayoutBounds layoutBounds, OverlayLayout layout)
   {
+    OverlayTheme.setChangeListener(() -> new android.os.Handler(android.os.Looper.getMainLooper())
+        .post(this::refreshControls));
       overlayButtons.add(initializeOverlayButton(getContext(), R.drawable.button_cross,
               R.drawable.button_cross_pressed, ButtonType.BUTTON_CROSS, ControlId.a,
               OVERLAY_MASK_BASIC, layout, layoutBounds, mScale, mOpacity));
@@ -687,6 +697,11 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
       overlayButtons.add(initializeOverlayButton(getContext(), R.drawable.button_start,
               R.drawable.button_start_pressed, ButtonType.BUTTON_START,
               ControlId.start, OVERLAY_MASK_BASIC, layout, layoutBounds, mScale, mOpacity));
+
+      for (int i = 0; i < 5; i++) {
+        overlayButtons.add(initializeComboButton(getContext(), i, ButtonType.COMBO_1 + i,
+            2000 + i, OVERLAY_MASK_BASIC, layout, layoutBounds, mScale, mOpacity));
+      }
 
       overlayButtons.add(initializeOverlayButton(getContext(), R.drawable.button_ps,
             R.drawable.button_ps_pressed, ButtonType.BUTTON_PS,
@@ -727,6 +742,11 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
       touchSwitch.setTiltStateBitmap(getResources(), BitmapFactory.decodeResource(getResources(), R.drawable.button_touch_t));
     overlayButtons.add(touchSwitch);
 
+    overlayButtons.add(initializeHostButton(getContext(), ButtonType.BUTTON_CHEAT,
+            ControlId.cheat, "C", 0.02f, 0.12f, layout, layoutBounds, mScale, mOpacity));
+    overlayButtons.add(initializeHostButton(getContext(), ButtonType.BUTTON_MACRO,
+            ControlId.macro, "M", 0.02f, 0.22f, layout, layoutBounds, mScale, mOpacity));
+
     // show hide button
     overlayButtons.add(initializeOverlayButton(getContext(), R.drawable.button_hide,
             R.drawable.button_hide_pressed, ButtonType.BUTTON_TOUCH_HIDE,
@@ -746,6 +766,11 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
               R.drawable.joystick, R.drawable.joystick_pressed,
               ButtonType.STICK_RIGHT, ControlId.axis_right_x,
               ControlId.axis_right_y, layout, layoutBounds, mScale, mOpacity));
+
+    // Buttons hidden in Setting Controls are not added to the overlay.
+    overlayButtons.removeIf(b -> OverlayTheme.isHidden(getContext(), b.getLegacyId()));
+    overlayDpads.removeIf(d -> OverlayTheme.isHidden(getContext(), d.getLegacyId()));
+    overlayJoysticks.removeIf(j -> OverlayTheme.isHidden(getContext(), j.getLegacyId()));
   }
 
   public void refreshControls()
@@ -797,11 +822,150 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
   private void saveControlPosition(int buttonType, int x, int y)
   {
+    if (isCustomHostButton(buttonType)) {
+      LayoutBounds lb = resolveLayoutBounds();
+      float nx = lb.width > 0 ? (float) x / lb.width : 0f;
+      float ny = lb.height > 0 ? (float) y / lb.height : 0f;
+      saveHostPosition(getContext(), buttonType, nx, ny);
+      return;
+    }
     LayoutBounds layoutBounds = resolveLayoutBounds();
     float normalizedX = layoutBounds.width > 0 ? (float) x / layoutBounds.width : 0f;
     float normalizedY = layoutBounds.height > 0 ? (float) y / layoutBounds.height : 0f;
     OverlayLayout updatedLayout = mLayout.withPosition(buttonType, normalizedX, normalizedY);
     setLayout(updatedLayout, false);
+  }
+
+  private static boolean isCustomHostButton(int legacyId)
+  {
+    return legacyId == ButtonType.BUTTON_CHEAT
+            || legacyId == ButtonType.BUTTON_MACRO;
+  }
+
+  private static final String HOST_POS_PREFS = "overlay_host_pos";
+
+  private static float[] loadHostPosition(Context context, int legacyId)
+  {
+    android.content.SharedPreferences p =
+            context.getSharedPreferences(HOST_POS_PREFS, Context.MODE_PRIVATE);
+    if (!p.contains("x_" + legacyId))
+      return null;
+    return new float[] { p.getFloat("x_" + legacyId, 0f), p.getFloat("y_" + legacyId, 0f) };
+  }
+
+  private static void saveHostPosition(Context context, int legacyId, float nx, float ny)
+  {
+    context.getSharedPreferences(HOST_POS_PREFS, Context.MODE_PRIVATE).edit()
+            .putFloat("x_" + legacyId, nx)
+            .putFloat("y_" + legacyId, ny)
+            .apply();
+  }
+
+  /** Tombol yang tidak mengirim input pad ke game (touch switch, hide, cheat). */
+  private static boolean isHostButton(int legacyId)
+  {
+    return legacyId == ButtonType.BUTTON_TOUCH_SWITCH
+            || legacyId == ButtonType.BUTTON_TOUCH_HIDE
+            || legacyId == ButtonType.BUTTON_CHEAT
+            || legacyId == ButtonType.BUTTON_MACRO;
+  }
+
+  private static Bitmap makeCheatBitmap(int size, boolean pressed)
+  {
+    final Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+    final Canvas canvas = new Canvas(bitmap);
+    final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    paint.setColor(pressed ? 0xCCFFFFFF : 0x99202020);
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, paint);
+    paint.setColor(pressed ? 0xFF000000 : 0xFFFFFFFF);
+    paint.setTextAlign(Paint.Align.CENTER);
+    paint.setTextSize(size * 0.5f);
+    paint.setFakeBoldText(true);
+    final float y = size / 2f - (paint.descent() + paint.ascent()) / 2f;
+    canvas.drawText("C", size / 2f, y, paint);
+    return bitmap;
+  }
+
+  private static Bitmap makeHostBitmap(int size, boolean pressed, String label)
+  {
+    final Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+    final Canvas canvas = new Canvas(bitmap);
+    final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    paint.setColor(pressed ? 0xCCFFFFFF : 0x99202020);
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, paint);
+    paint.setColor(pressed ? 0xFF000000 : 0xFFFFFFFF);
+    paint.setTextAlign(Paint.Align.CENTER);
+    paint.setFakeBoldText(true);
+    paint.setTextSize(label.length() > 1 ? size * 0.3f : size * 0.5f);
+    final float y = size / 2f - (paint.descent() + paint.ascent()) / 2f;
+    canvas.drawText(label, size / 2f, y, paint);
+    return bitmap;
+  }
+
+  private static String themeBaseName(int legacyId)
+  {
+    if (legacyId == ButtonType.BUTTON_CHEAT) return "button_cheat";
+    if (legacyId == ButtonType.BUTTON_MACRO) return "button_macro";
+    return "button_host";
+  }
+
+  private static InputOverlayDrawableButton initializeHostButton(Context context,
+          int legacyId, int control, String label, float fallbackX, float fallbackY,
+          OverlayLayout layout, LayoutBounds layoutBounds, float globalScale, int globalOpacity)
+  {
+    final Resources res = context.getResources();
+    final float scale = 0.15f * OverlayTheme.getScale(context, legacyId) * globalScale;
+    // Ikon: pakai PNG dari tema bila ada (nama file: <base>.png dan <base>_pressed.png),
+    // kalau tidak ada pakai gambar bawaan.
+    final String base = themeBaseName(legacyId);
+    final Bitmap themedDefault = OverlayTheme.decodeTheme(context, base + ".png");
+    final Bitmap themedPressed = OverlayTheme.decodeTheme(context, base + "_pressed.png");
+    final Bitmap defaultStateBitmap = resizeBitmap(context,
+            themedDefault != null ? themedDefault : makeHostBitmap(256, false, label), scale);
+    final Bitmap pressedStateBitmap = resizeBitmap(context,
+            themedPressed != null ? themedPressed : makeHostBitmap(256, true, label), scale);
+    final InputOverlayDrawableButton overlayDrawable =
+            new InputOverlayDrawableButton(res, defaultStateBitmap, pressedStateBitmap,
+                    legacyId, control, OVERLAY_MASK_BASIC);
+
+    float[] saved = loadHostPosition(context, legacyId);
+    OverlayPosition position = saved != null
+            ? new OverlayPosition(saved[0], saved[1])
+            : layout.positionFor(legacyId);
+    if (position == null)
+      position = new OverlayPosition(fallbackX, fallbackY);
+    int drawableX = Math.round(position.getNormalizedX() * layoutBounds.width);
+    int drawableY = Math.round(position.getNormalizedY() * layoutBounds.height);
+
+    overlayDrawable.setBounds(drawableX, drawableY,
+            drawableX + overlayDrawable.getWidth(), drawableY + overlayDrawable.getHeight());
+    overlayDrawable.setPosition(drawableX, drawableY);
+    overlayDrawable.setOpacity(OverlayTheme.effectiveOpacity(context, legacyId, globalOpacity));
+    return overlayDrawable;
+  }
+
+  private static InputOverlayDrawableButton initializeCheatButton(Context context,
+          OverlayLayout layout, LayoutBounds layoutBounds, float globalScale, int globalOpacity)
+  {
+    final Resources res = context.getResources();
+    final float scale = 0.15f * OverlayTheme.getScale(context, ButtonType.BUTTON_CHEAT) * globalScale;
+    final Bitmap defaultStateBitmap = resizeBitmap(context, makeCheatBitmap(256, false), scale);
+    final Bitmap pressedStateBitmap = resizeBitmap(context, makeCheatBitmap(256, true), scale);
+    final InputOverlayDrawableButton overlayDrawable =
+            new InputOverlayDrawableButton(res, defaultStateBitmap, pressedStateBitmap,
+                    ButtonType.BUTTON_CHEAT, ControlId.cheat, OVERLAY_MASK_BASIC);
+
+    OverlayPosition position = layout.positionFor(ButtonType.BUTTON_CHEAT);
+    if (position == null)
+      position = new OverlayPosition(0f, 0f);
+    int drawableX = Math.round(position.getNormalizedX() * layoutBounds.width);
+    int drawableY = Math.round(position.getNormalizedY() * layoutBounds.height);
+
+    overlayDrawable.setBounds(drawableX, drawableY,
+            drawableX + overlayDrawable.getWidth(), drawableY + overlayDrawable.getHeight());
+    overlayDrawable.setPosition(drawableX, drawableY);
+    overlayDrawable.setOpacity(OverlayTheme.effectiveOpacity(context, ButtonType.BUTTON_CHEAT, globalOpacity));
+    return overlayDrawable;
   }
 
   /**
@@ -817,6 +981,55 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
    * @param control      Control identifier for the button the InputOverlayDrawableButton represents.
    * @return An {@link InputOverlayDrawableButton} with the correct drawing bounds set.
    */
+  /** Round on-screen button showing the combo number (1..5). */
+  private static Bitmap makeComboBitmap(int size, int index, boolean pressed)
+  {
+    final Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+    final Canvas canvas = new Canvas(bitmap);
+    final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    paint.setColor(pressed ? 0xCCFFFFFF : 0x99202020);
+    canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, paint);
+    paint.setColor(pressed ? 0xFF000000 : 0xFFFFFFFF);
+    paint.setTextAlign(Paint.Align.CENTER);
+    paint.setTextSize(size * 0.5f);
+    paint.setFakeBoldText(true);
+    final float y = size / 2f - (paint.descent() + paint.ascent()) / 2f;
+    canvas.drawText(String.valueOf(index + 1), size / 2f, y, paint);
+    return bitmap;
+  }
+
+  private static InputOverlayDrawableButton initializeComboButton(Context context, int index,
+          int legacyId, int control, int role, OverlayLayout layout, LayoutBounds layoutBounds,
+          float globalScale, int globalOpacity)
+  {
+    final Resources res = context.getResources();
+    final float scale = 0.15f * OverlayTheme.getScale(context, legacyId) * globalScale;
+
+    final Bitmap themedDefault = OverlayTheme.decodeTheme(context, "button_combo_" + (index + 1) + ".png");
+    final Bitmap defaultStateBitmap = resizeBitmap(context,
+            themedDefault != null ? themedDefault : makeComboBitmap(256, index, false), scale);
+    final Bitmap themedPressed = OverlayTheme.decodeTheme(context, "button_combo_" + (index + 1) + "_pressed.png");
+    final Bitmap pressedStateBitmap = resizeBitmap(context,
+            themedPressed != null ? themedPressed : makeComboBitmap(256, index, true), scale);
+    final InputOverlayDrawableButton overlayDrawable =
+            new InputOverlayDrawableButton(res, defaultStateBitmap, pressedStateBitmap, legacyId,
+                    control, role);
+
+    OverlayPosition position = layout.positionFor(legacyId);
+    if (position == null)
+      position = new OverlayPosition(0f, 0f);
+    int drawableX = Math.round(position.getNormalizedX() * layoutBounds.width);
+    int drawableY = Math.round(position.getNormalizedY() * layoutBounds.height);
+
+    int width = overlayDrawable.getWidth();
+    int height = overlayDrawable.getHeight();
+    overlayDrawable.setBounds(drawableX, drawableY, drawableX + width, drawableY + height);
+    overlayDrawable.setPosition(drawableX, drawableY);
+    overlayDrawable.setOpacity(OverlayTheme.effectiveOpacity(context, legacyId, globalOpacity));
+
+    return overlayDrawable;
+  }
+
   private static InputOverlayDrawableButton initializeOverlayButton(Context context,
           int defaultResId, int pressedResId, int legacyId, int control, int role,
           OverlayLayout layout, LayoutBounds layoutBounds, float globalScale, int globalOpacity)
@@ -825,7 +1038,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
     final Resources res = context.getResources();
 
     // Decide scale based on button ID and user preference
-    float scale = 0.15f;
+    float scale = 0.15f * OverlayTheme.getScale(context, legacyId);
 
     if(legacyId == ButtonType.TRIGGER_L
             || legacyId == ButtonType.TRIGGER_R
@@ -843,9 +1056,9 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
     // Initialize the InputOverlayDrawableButton.
     final Bitmap defaultStateBitmap =
-            resizeBitmap(context, BitmapFactory.decodeResource(res, defaultResId), scale);
+            resizeBitmap(context, OverlayTheme.decodeButton(context, defaultResId), scale);
     final Bitmap pressedStateBitmap =
-            resizeBitmap(context, BitmapFactory.decodeResource(res, pressedResId), scale);
+            resizeBitmap(context, OverlayTheme.decodeButton(context, pressedResId), scale);
     final InputOverlayDrawableButton overlayDrawable =
             new InputOverlayDrawableButton(res, defaultStateBitmap, pressedStateBitmap, legacyId,
                     control, role);
@@ -871,7 +1084,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
     // Need to set the image's position
     overlayDrawable.setPosition(drawableX, drawableY);
-    overlayDrawable.setOpacity((int) (globalOpacity * 0.01 * 255));
+    overlayDrawable.setOpacity(OverlayTheme.effectiveOpacity(context, legacyId, globalOpacity));
 
     return overlayDrawable;
   }
@@ -908,18 +1121,18 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
     final Resources res = context.getResources();
 
     // Decide scale based on button ID and user preference
-    float scale = 0.35f;
+    float scale = 0.35f * OverlayTheme.getScale(context, legacyId);
 
     scale *= globalScale;
 
     // Initialize the InputOverlayDrawableDpad.
     final Bitmap defaultStateBitmap =
-            resizeBitmap(context, BitmapFactory.decodeResource(res, defaultResId), scale);
+            resizeBitmap(context, OverlayTheme.decodeButton(context, defaultResId), scale);
     final Bitmap pressedOneDirectionStateBitmap =
-            resizeBitmap(context, BitmapFactory.decodeResource(res, pressedOneDirectionResId),
+            resizeBitmap(context, OverlayTheme.decodeButton(context, pressedOneDirectionResId),
                     scale);
     final Bitmap pressedTwoDirectionsStateBitmap =
-            resizeBitmap(context, BitmapFactory.decodeResource(res, pressedTwoDirectionsResId),
+            resizeBitmap(context, OverlayTheme.decodeButton(context, pressedTwoDirectionsResId),
                     scale);
     final InputOverlayDrawableDpad overlayDrawable =
             new InputOverlayDrawableDpad(res, defaultStateBitmap,
@@ -941,7 +1154,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
     // Need to set the image's position
     overlayDrawable.setPosition(drawableX, drawableY);
-    overlayDrawable.setOpacity((int) (globalOpacity * 0.01 * 255));
+    overlayDrawable.setOpacity(OverlayTheme.effectiveOpacity(context, legacyId, globalOpacity));
 
     return overlayDrawable;
   }
@@ -967,14 +1180,14 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
     final Resources res = context.getResources();
 
     // Decide scale based on user preference
-    float scale = 0.275f;
+    float scale = 0.275f * OverlayTheme.getScale(context, legacyId);
     scale *= globalScale;
 
     // Initialize the InputOverlayDrawableJoystick.
     final Bitmap bitmapOuter =
-            resizeBitmap(context, BitmapFactory.decodeResource(res, resOuter), scale);
-    final Bitmap bitmapInnerDefault = BitmapFactory.decodeResource(res, defaultResInner);
-    final Bitmap bitmapInnerPressed = BitmapFactory.decodeResource(res, pressedResInner);
+            resizeBitmap(context, OverlayTheme.decodeButton(context, resOuter), scale);
+    final Bitmap bitmapInnerDefault = OverlayTheme.decodeButton(context, defaultResInner);
+    final Bitmap bitmapInnerPressed = OverlayTheme.decodeButton(context, pressedResInner);
 
     OverlayPosition position = layout.positionFor(legacyId);
     if (position == null)
@@ -998,7 +1211,7 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
     // Need to set the image's position
     overlayDrawable.setPosition(drawableX, drawableY);
-    overlayDrawable.setOpacity((int) (globalOpacity * 0.01 * 255));
+    overlayDrawable.setOpacity(OverlayTheme.effectiveOpacity(context, legacyId, globalOpacity));
 
     return overlayDrawable;
   }
@@ -1181,6 +1394,13 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
     public static final int TRIGGER_R3 = 25;
     public static final int BUTTON_TOUCH_HIDE = 1023;
     public static final int BUTTON_TOUCH_SWITCH = 1024;
+    public static final int COMBO_1 = 1030;
+    public static final int COMBO_2 = 1031;
+    public static final int COMBO_3 = 1032;
+    public static final int COMBO_4 = 1033;
+    public static final int COMBO_5 = 1034;
+    public static final int BUTTON_CHEAT = 1025;
+    public static final int BUTTON_MACRO = 1026;
   }
 
   // SDL values
@@ -1208,6 +1428,14 @@ public final class InputOverlay extends SurfaceView implements OnTouchListener
 
     // button to switch between front and back touch
     public static final int touch = 1024;
+    // control for the cheat panel button; never sent to the game
+    public static final int cheat = -100;
+    public static final int macro = -101;
+    public static final int combo_1 = 2000;
+    public static final int combo_2 = 2001;
+    public static final int combo_3 = 2002;
+    public static final int combo_4 = 2003;
+    public static final int combo_5 = 2004;
 
     public static final int axis_left_x = 0;
     public static final int axis_left_y = 1;
